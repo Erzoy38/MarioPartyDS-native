@@ -23,3 +23,4 @@ struct Gpu3dStats {
     u64 unknown_commands = 0;
 };
 const Gpu3dStats& gpu3d_stats();
+void gpu3d_print_last_list();  // for finding out why a scene looks wrong

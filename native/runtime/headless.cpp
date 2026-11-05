@@ -233,6 +233,7 @@ int main(int argc, char** argv) {
         if (c.pc == kGameTick && g_dump_ticks.count(g_game_ticks) != 0) {
             write_all_dumps(dump + "/tick" + std::to_string(g_game_ticks));
             std::printf("dumped at game tick %llu\n", static_cast<unsigned long long>(g_game_ticks));
+            gpu3d_print_last_list();
         }
         if (c.pc == kGameTick) write_frame_if_wanted(dump, g_game_ticks);
         if ((blocks & 0xFFF) == 0) ++g_hot[c.pc];

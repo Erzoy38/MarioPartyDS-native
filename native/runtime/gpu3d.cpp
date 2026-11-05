@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS  // getenv, only for a diagnostic switch
 #include "gpu3d.h"
 
 #include "hw.h"
@@ -6,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <vector>
@@ -223,13 +225,27 @@ std::vector<Vertex> clip_plane(const std::vector<Vertex>& in, int axis, float si
     return out;
 }
 
+struct DebugCounts {
+    u32 submitted = 0, far_dropped = 0, culled = 0;
+    u32 per_format[8] = {};
+    u32 per_mode[4] = {};
+    u32 translucent = 0;
+    u32 large = 0;  // covers more than a quarter of the picture
+    u32 sample_attr[4] = {}, sample_tex[4] = {}, sample_pal[4] = {};
+    int samples = 0;
+} g_debug, g_last_debug;
+
 void add_polygon(std::vector<Vertex> vertices) {
     if (g_building.size() >= kMaxPolygons) return;
     const u32 attr = g_poly_attr;
     // A polygon that reaches past the far plane is dropped unless it asks to be clipped there.
+    ++g_debug.submitted;
     if (!(attr & 0x1000)) {
         for (const Vertex& v : vertices) {
-            if (v.z > v.w) return;
+            if (v.z > v.w) {
+                ++g_debug.far_dropped;
+                return;
+            }
         }
     }
     for (int axis = 0; axis < 3 && !vertices.empty(); ++axis) {
@@ -263,7 +279,10 @@ void add_polygon(std::vector<Vertex> vertices) {
         area += (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
     }
     const bool front = area > 0;
-    if (front ? !(attr & 0x80) : !(attr & 0x40)) return;
+    if (front ? !(attr & 0x80) : !(attr & 0x40)) {
+        ++g_debug.culled;
+        return;
+    }
 
     const u32 alpha = (attr >> 16) & 31;
     const u32 format = (g_tex_param >> 26) & 7;
@@ -275,6 +294,18 @@ void add_polygon(std::vector<Vertex> vertices) {
     polygon.translucent = (alpha != 31 && alpha != 0) || format == 1 || format == 6;
     polygon.y_min = y_min;
     polygon.y_max = y_max;
+    ++g_debug.per_format[format];
+    ++g_debug.per_mode[(attr >> 4) & 3];
+    if (polygon.translucent) ++g_debug.translucent;
+    if (std::fabs(area) > kWidth * kHeight / 2.0f) {
+        ++g_debug.large;
+        if (g_debug.samples < 4) {
+            g_debug.sample_attr[g_debug.samples] = attr;
+            g_debug.sample_tex[g_debug.samples] = g_tex_param;
+            g_debug.sample_pal[g_debug.samples] = g_pal_base;
+            ++g_debug.samples;
+        }
+    }
     g_vertices_written += u32(polygon.vertices.size());
     g_building.push_back(std::move(polygon));
 }
@@ -667,7 +698,9 @@ void apply_edges_and_fog(u32 disp) {
 }
 
 void draw_list() {
-    const u32 disp = io16_at(0x60);
+    u32 disp = io16_at(0x60);
+    static const bool no_textures = std::getenv("MPDS_NO_TEXTURES") != nullptr;
+    if (no_textures) disp &= ~1u;
     const bool w_mode = g_swap_param & 2;
     const bool manual_sort = g_swap_param & 1;
 
@@ -1042,6 +1075,8 @@ void gpu3d_vblank() {
     g_stats.last_vertices = g_vertices_written;
     g_vertices_written = 0;
     draw_list();
+    g_last_debug = g_debug;
+    g_debug = DebugCounts{};
     g_swap_pending = false;
     run_queue();
 }
@@ -1049,3 +1084,22 @@ void gpu3d_vblank() {
 const u32* gpu3d_line(u32 line) { return g_picture[line]; }
 
 const Gpu3dStats& gpu3d_stats() { return g_stats; }
+
+void gpu3d_print_last_list() {
+    const DebugCounts& d = g_last_debug;
+    std::printf("3D list: submitted %u, far dropped %u, culled %u, translucent %u, large %u\n",
+                d.submitted, d.far_dropped, d.culled, d.translucent, d.large);
+    std::printf("  formats:");
+    for (int i = 0; i < 8; ++i) std::printf(" %u", d.per_format[i]);
+    std::printf("  modes:");
+    for (int i = 0; i < 4; ++i) std::printf(" %u", d.per_mode[i]);
+    std::printf("\n  disp3d %04x clear %08x depth %04x\n", io16_at(0x60), io32_at(0x350), io16_at(0x354));
+    for (int i = 0; i < d.samples; ++i) {
+        std::printf("  large polygon: attr %08x tex %08x pal %04x\n", d.sample_attr[i], d.sample_tex[i], d.sample_pal[i]);
+    }
+    std::printf("  texture slots:");
+    for (u32 i = 0; i < 4; ++i) std::printf(" %d", vram_texture_slot(i) != nullptr);
+    std::printf("  palette slots:");
+    for (u32 i = 0; i < 6; ++i) std::printf(" %d", vram_texture_palette_slot(i) != nullptr);
+    std::printf("\n");
+}
