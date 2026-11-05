@@ -364,7 +364,7 @@ Der ARM7-Ersatz bedient die PXI-Kanäle 5 (Uhr), 6 (Touch), 7 (Sound), 8 (Strom 
 
 ## 11. Offene Entscheidungen
 
-1. Architektur B mit N1 oder N2 nach Phase 1 freigeben.
-2. Server: eigener Dauerbetrieb, Miet-Server oder Host-PC.
-3. Weitergabe: Wie kommen die anderen drei Spieler an die Exe, und hat jeder eine eigene ROM?
-4. Git-Repository anlegen (bisher keines vorhanden).
+1. Architektur B mit N1: **entschieden** (Phase 1).
+2. Server: **entschieden am 05.11.2026: auf dem PC des Nutzers.** Folgen: Der Server läuft nur, solange dieser PC an ist. Die anderen erreichen ihn über die öffentliche Adresse des Anschlusses; dafür braucht es eine Portweiterleitung im Router (UDP), oder UPnP, falls der Router es erlaubt. Bei wechselnder öffentlicher Adresse braucht es einen dynamischen DNS-Namen oder einen neuen Einladungscode. Der Lobby-Dienst kann im selben Programm laufen.
+3. Weitergabe: Wie kommen die anderen drei Spieler an die Exe, und hat jeder eine eigene ROM? **Offen.**
+4. Git-Repository: **angelegt**, nur lokal.
