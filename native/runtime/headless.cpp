@@ -138,7 +138,9 @@ void print_watched() {
 }
 
 // --input TICK:WHAT[:FRAMES], repeatable, from game tick TICK on for FRAMES ticks (default 6).
-// WHAT is a key name, or touch;X;Y in pixels. Same script, same run: this is how tests play.
+// WHAT is a key name, MIC for blowing into the microphone, or touch;X;Y in pixels. Same script, same run: this is how tests play.
+constexpr u32 kMicBit = 1u << 16;
+
 struct ScriptedInput {
     u64 tick;
     u32 keys;
@@ -160,6 +162,8 @@ void add_input(const char* text) {
     ScriptedInput input{tick, 0, false, 0, 0, frames};
     if (std::sscanf(what, "touch;%u;%u", &input.x, &input.y) == 2) {
         input.touch = true;
+    } else if (!std::strcmp(what, "MIC")) {
+        input.keys = kMicBit;
     } else {
         for (u32 i = 0; i < 12; ++i) {
             if (!std::strcmp(what, kNames[i])) input.keys = 1u << i;
@@ -185,7 +189,8 @@ void apply_script(u64 tick) {
             y = input.y;
         }
     }
-    hw_set_keys(keys);
+    hw_set_keys(keys & 0xFFF);
+    hw_set_mic(keys & kMicBit);
     hw_set_touch(touching, x, y);
 }
 
@@ -246,6 +251,16 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--name")) settings.player_name = argv[i + 1];
         else if (!std::strcmp(argv[i], "--save")) settings.save = read_file(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--input")) add_input(argv[i + 1]);
+        else if (!std::strcmp(argv[i], "--repeat")) {
+            // FROM:TO:STEP:WHAT[:FRAMES], the same as many --input
+            unsigned long long from = 0, to = 0, step = 1;
+            int used = 0;
+            if (std::sscanf(argv[i + 1], "%llu:%llu:%llu:%n", &from, &to, &step, &used) == 3 && step > 0) {
+                for (unsigned long long tick = from; tick <= to; tick += step) {
+                    add_input((std::to_string(tick) + ":" + (argv[i + 1] + used)).c_str());
+                }
+            }
+        }
     }
 
     const std::vector<u8> rom = read_file(argv[1]);
@@ -268,7 +283,15 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(sound_stats().notes), sound_stats().active_players,
                         sound_stats().active_channels, static_cast<unsigned long long>(sound_stats().unknown_commands));
             write_wav();
-            std::printf("pc=%08x cpsr=%08x\n", c.pc, c.cpsr());
+            std::printf("pc=%08x cpsr=%08x lr=%08x sp=%08x stack:", c.pc, c.cpsr(), c.r[14], c.r[13]);
+            for (u32 i = 0, shown = 0; i < 128 && shown < 12; ++i) {
+                const u32 value = rd32(c.r[13] + i * 4);
+                if (value >= 0x02000000 && value < 0x021A5000 && (value & 3) == 0) {
+                    std::printf(" %08x", value);
+                    ++shown;
+                }
+            }
+            std::printf("\n");
             print_hot_blocks();
             return 4;
         }

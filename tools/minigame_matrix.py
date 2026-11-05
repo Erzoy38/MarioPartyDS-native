@@ -39,6 +39,7 @@ def inputs_for(ticks):
     n = 0
     while tick < end:
         args += ["--input", f"{tick}:A:4"]
+        args += ["--input", f"{tick + 5}:MIC:6"]
         args += ["--input", f"{tick + 15}:touch;{40 + (n * 37) % 180};{30 + (n * 53) % 130}:8"]
         args += ["--input", f"{tick + 30}:{keys[n % 4]}:10"]
         tick += 45

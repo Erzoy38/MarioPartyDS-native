@@ -293,6 +293,10 @@ int main(int argc, char** argv) {
         const bool mouse_touch = (buttons & SDL_BUTTON_LMASK) && logical_x >= 0 && logical_x < kWidth
                                  && logical_y >= kScreenHeight && logical_y < kHeight;
         hw_set_keys(keyboard_keys() | pad_keys());
+        // Blowing into the microphone: a key, or the left trigger.
+        hw_set_mic(SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_SPACE]
+                   || (g_pad.handle != nullptr
+                       && SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000));
         if (mouse_touch) hw_set_touch(true, u32(logical_x), u32(logical_y) - kScreenHeight);
         else if (g_pad.touching) hw_set_touch(true, u32(g_pad.pointer_x), u32(g_pad.pointer_y));
         else hw_set_touch(false, 0, 0);

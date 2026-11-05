@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <algorithm>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -176,6 +177,85 @@ void arm7_touch(u32 data) {
     arm7_reply(6, 0x01000000);
 }
 
+// Microphone. A request spans several words: the first holds command and format, the next ones a
+// running number in bits 16-19 and 16 bits of a value, and bit 24 marks the last (see 0x0206B090).
+// The reply is the command with a result byte (callback at 0x0206AF68). The buffer fills as the
+// ARM7 would fill it. The input is only "blowing or not", so it can travel with the other keys.
+namespace mic {
+bool g_running = false, g_blowing = false, g_loop = false;
+u32 g_type = 0, g_buffer = 0, g_size = 0, g_position = 0, g_timer = 1, g_rest = 0, g_counter = 0;
+u32 g_words[8];
+u32 g_command = 0;
+constexpr u32 kLastAddress = 0x027FFF90, kOneSample = 0x027FFF94;
+constexpr u32 kBusCyclesPerLine = 2130;  // 33.51 MHz / 15734 lines
+
+void write_sample(u32 at) {
+    ++g_counter;
+    const bool high = g_blowing && (g_counter & 1);
+    const bool sixteen = g_type & 1;
+    const bool is_signed = (g_type & 2) != 0;
+    u32 value;
+    if (!g_blowing) value = is_signed ? 0 : (sixteen ? 0x8000 : 0x80);
+    else if (is_signed) value = high ? (sixteen ? 0x7FF0 : 0x7F) : (sixteen ? 0x8000 : 0x80);
+    else value = high ? (sixteen ? 0xFFF0 : 0xFF) : 0;
+    if (sixteen) wr16(at, u16(value));
+    else wr8(at, u8(value));
+}
+
+void line() {
+    if (!g_running) return;
+    g_rest += kBusCyclesPerLine;
+    const u32 bytes = (g_type & 1) ? 2 : 1;
+    while (g_rest >= g_timer) {
+        g_rest -= g_timer;
+        write_sample(g_buffer + g_position);
+        wr32(kLastAddress, g_buffer + g_position);
+        g_position += bytes;
+        if (g_position >= g_size) {
+            g_position = 0;
+            if (!g_loop) {
+                g_running = false;
+                arm7_reply(9, 0x51u << 8);  // buffer full
+                return;
+            }
+        }
+    }
+}
+
+void receive(u32 data) {
+    if (((data >> 24) & 2) != 0) {  // first word
+        g_command = (data >> 8) & 0x7F;
+        g_type = data & 0xFF;
+    } else {
+        g_words[(data >> 16) & 7] = data & 0xFFFF;
+    }
+    if (!(data & 0x01000000)) return;
+    switch (g_command) {
+        case 0x40:  // one sample
+            write_sample(kOneSample);
+            break;
+        case 0x41: {  // keeps sampling into a buffer
+            g_loop = g_type & 0x10;
+            g_type &= 0x0F;
+            g_buffer = (g_words[1] << 16) | g_words[2];
+            g_size = (g_words[3] << 16) | g_words[4];
+            g_timer = std::max(1u, (g_words[5] << 16) | g_words[6]);
+            g_position = 0;
+            g_rest = 0;
+            g_running = g_size != 0;
+            break;
+        }
+        case 0x42:  // stop
+            g_running = false;
+            break;
+        default:
+            std::printf("microphone command %#x not built\n", g_command);
+            break;
+    }
+    arm7_reply(9, g_command << 8);  // result 0: success
+}
+}  // namespace mic
+
 void arm7_receive(u32 word) {
     const u32 tag = word & 31;
     const u32 data = word >> 6;
@@ -197,6 +277,10 @@ void arm7_receive(u32 word) {
     }
     if (tag == 7) {
         sound_receive(data);
+        return;
+    }
+    if (tag == 9) {
+        mic::receive(data);
         return;
     }
     if (++g_tag_counts[tag] <= 12) {
@@ -411,6 +495,7 @@ void card_start(u32 control) {
 void next_line() {
     g_hw.line_blocks = 0;
     sound_line();
+    mic::line();
     ++g_hw.line;
     if (g_hw.line >= kLinesPerFrame) {
         g_hw.line = 0;
@@ -450,6 +535,8 @@ void hw_set_keys(u32 pressed) {
 void hw_set_touch(bool touching, u32 x, u32 y) {
     g_touch_word = touching ? ((x << 4) | (y << 16) | (1u << 24)) : 0x06000000u;
 }
+
+void hw_set_mic(bool blowing) { mic::g_blowing = blowing; }
 
 void hw_set_save(const std::vector<u8>& contents) { backup::g_memory = contents; }
 

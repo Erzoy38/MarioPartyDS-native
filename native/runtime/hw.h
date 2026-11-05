@@ -40,6 +40,7 @@ void hw_raise(u32 flags);
 // X, Y from bit 0, set while pressed. Touch positions are screen pixels.
 void hw_set_keys(u32 pressed);
 void hw_set_touch(bool touching, u32 x, u32 y);
+void hw_set_mic(bool blowing);  // blowing into the microphone, as one on/off input
 // Save memory: set at start, read to write it to a file. The flag clears when read.
 void hw_set_save(const std::vector<u8>& contents);
 const std::vector<u8>& hw_save();

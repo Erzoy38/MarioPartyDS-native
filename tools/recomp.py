@@ -478,12 +478,23 @@ def follow_jump_tables(tracer, space):
                 continue
             done.add(addr)
             entry = addr + 8
+            # The compare before it says how many entries there are, whatever they contain.
+            compare = space.u32(addr - 4)
+            count = None
+            if compare is not None and (compare & 0x0FF00000) == 0x03500000:
+                count = (compare & 0xFF) + 1
+            index = 0
             while True:
                 word = space.u32(entry)
-                if word is None or (word & 0xFF000000) != 0xEA000000:
+                if word is None:
+                    break
+                if count is None and (word & 0xFF000000) != 0xEA000000:
+                    break
+                if count is not None and index >= count:
                     break
                 tracer.add(entry, False, None)
                 entry += 4
+                index += 1
                 added += 1
         if not added:
             return
@@ -515,6 +526,17 @@ def trace(space, code, entries):
     tracer = Tracer(space, code)
     for addr, thumb in entries:
         tracer.add(addr, thumb, "entry")
+    tracer.run()
+    follow_jump_tables(tracer, space)
+    # Also every ARM function start. Callbacks are often only known at run time, and a wrong guess
+    # only translates code that never runs. Thumb is left out: read at a wrong address, it could
+    # claim addresses that are really ARM code.
+    for segment in code:
+        for offset in range(0, len(segment.data) - 3, 4):
+            word = int.from_bytes(segment.data[offset:offset + 4], "little")
+            address = segment.base + offset
+            if (word & 0xFFFF0000) == 0xE92D0000 and address not in tracer.seen:
+                tracer.add(address, False, "entry")
     tracer.run()
     follow_jump_tables(tracer, space)
     return tracer
