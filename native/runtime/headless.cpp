@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,6 +42,19 @@ void write_dump(const std::filesystem::path& folder, const char* name, const std
     std::ofstream out(folder / name, std::ios::binary);
     out.write(reinterpret_cast<const char*>(data.data()), std::streamsize(data.size()));
 }
+
+void write_all_dumps(const std::string& path) {
+    std::filesystem::create_directories(path);
+    const std::filesystem::path folder(path);
+    write_dump(folder, "main_ram.bin", g_machine.main_ram);
+    write_dump(folder, "itcm.bin", g_machine.itcm);
+    write_dump(folder, "dtcm.bin", g_machine.dtcm);
+    write_dump(folder, "palette.bin", g_machine.palette);
+    write_dump(folder, "oam.bin", g_machine.oam);
+}
+
+// --dump-tick N, repeatable: also dumps to <dump>/tickN when game tick N starts.
+std::set<u64> g_dump_ticks;
 
 // Sampled block addresses, to show where a stuck run spends its time.
 std::map<u32, u32> g_hot;
@@ -152,6 +166,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--dump")) dump = argv[i + 1];
         else if (!std::strcmp(argv[i], "--max-blocks")) max_blocks = std::strtoull(argv[i + 1], nullptr, 0);
         else if (!std::strcmp(argv[i], "--watch")) g_watched[u32(std::strtoul(argv[i + 1], nullptr, 0))] = 0;
+        else if (!std::strcmp(argv[i], "--dump-tick")) g_dump_ticks.insert(std::strtoull(argv[i + 1], nullptr, 0));
     }
 
     const std::vector<u8> rom = read_file(argv[1]);
@@ -193,6 +208,10 @@ int main(int argc, char** argv) {
         if (g_hw.halted) continue;  // time passes until an interrupt wakes the CPU
         overlay_watch_calls(c);
         watch_progress(c);
+        if (c.pc == kGameTick && g_dump_ticks.count(g_game_ticks) != 0) {
+            write_all_dumps(dump + "/tick" + std::to_string(g_game_ticks));
+            std::printf("dumped at game tick %llu\n", static_cast<unsigned long long>(g_game_ticks));
+        }
         BlockFn block = bios_block(c.pc);
         int overlay_id = -1;
         if (block == nullptr) {
@@ -214,14 +233,6 @@ int main(int argc, char** argv) {
     std::printf("reached stop address\n");
     print_state(c, blocks);
 
-    if (!dump.empty()) {
-        std::filesystem::create_directories(dump);
-        const std::filesystem::path folder(dump);
-        write_dump(folder, "main_ram.bin", g_machine.main_ram);
-        write_dump(folder, "itcm.bin", g_machine.itcm);
-        write_dump(folder, "dtcm.bin", g_machine.dtcm);
-        write_dump(folder, "palette.bin", g_machine.palette);
-        write_dump(folder, "oam.bin", g_machine.oam);
-    }
+    if (!dump.empty()) write_all_dumps(dump);
     return 0;
 }
