@@ -13,10 +13,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from instruction_set import sext  # noqa: E402
-from nds_image import ARM9_BASE, Space  # noqa: E402
+from nds_image import ARM9_BASE, Segment, Space, load_overlay_table  # noqa: E402
 from trace_code import Tracer  # noqa: E402
 
 OUT = os.path.join("native", "generated")
+# Code addresses learned at run time: "addr thumb [ovN]" per line. Addresses only, no game code.
+FOUND_ENTRIES = os.path.join("tools", "recomp_entries.txt")
+# The scene tables in the main program (see labels.csv).
+SCENE_FUNCS, SCENE_OVERLAY, SCENE_COUNT = 0x0209A0AC, 0x02099EE8, 113
 # Mode entry functions found in the program table (decode_modes.py), and the start.
 DEFAULT_ENTRIES = [(ARM9_BASE + 0x800, False)] + [(a, False) for a in (
     0x02008120, 0x02054288, 0x020084BC, 0x02008114, 0x0201A704, 0x0201A720, 0x0201A7F0,
@@ -211,21 +215,22 @@ def arm_group0(w, addr):
         x_top, y_top = w >> 5 & 1, w >> 6 & 1
         x_half = f"s32(s16(c.r[{rm}] >> {16 if x_top else 0}))"
         y_half = f"s32(s16(c.r[{rs}] >> {16 if y_top else 0}))"
+        # In this group bits 19-16 name the result and bits 15-12 the value added to it.
         dest, acc = rn, rd
         if op == 0:
-            return [f"const s64 sum = s64({x_half} * {y_half}) + s64(s32(c.r[{dest}]));",
-                    f"if (sum != s32(sum)) c.q = 1; c.r[{acc}] = u32(sum);"]
+            return [f"const s64 sum = s64({x_half} * {y_half}) + s64(s32(c.r[{acc}]));",
+                    f"if (sum != s32(sum)) c.q = 1; c.r[{dest}] = u32(sum);"]
         if op == 1:
             product = f"((s64(s32(c.r[{rm}])) * {y_half}) >> 16)"
             if x_top:
-                return [f"c.r[{acc}] = u32(s32({product}));"]
-            return [f"const s64 sum = {product} + s64(s32(c.r[{dest}]));",
-                    f"if (sum != s32(sum)) c.q = 1; c.r[{acc}] = u32(sum);"]
-        if op == 2:
-            return [f"u64 pair = (u64(c.r[{acc}]) << 32) | c.r[{dest}];",
+                return [f"c.r[{dest}] = u32(s32({product}));"]
+            return [f"const s64 sum = {product} + s64(s32(c.r[{acc}]));",
+                    f"if (sum != s32(sum)) c.q = 1; c.r[{dest}] = u32(sum);"]
+        if op == 2:  # bits 19-16 hold the high word, bits 15-12 the low word
+            return [f"u64 pair = (u64(c.r[{dest}]) << 32) | c.r[{acc}];",
                     f"pair += u64(s64({x_half} * {y_half}));",
-                    f"c.r[{dest}] = u32(pair); c.r[{acc}] = u32(pair >> 32);"]
-        return [f"c.r[{acc}] = u32({x_half} * {y_half});"]
+                    f"c.r[{acc}] = u32(pair); c.r[{dest}] = u32(pair >> 32);"]
+        return [f"c.r[{dest}] = u32({x_half} * {y_half});"]
     if (w & 0x0FC000F0) == 0x00000090:
         s = w >> 20 & 1
         expr = f"c.r[{rm}] * c.r[{rs}]"
@@ -463,22 +468,189 @@ def thumb_statements(h, next_h, addr):
     return [f'runtime_abort("unhandled Thumb instruction", 0x{addr:X}u);']
 
 
+def follow_jump_tables(tracer, space):
+    """Follow "addcc pc,pc,rN,lsl #2" tables: each entry after it is a branch instruction."""
+    done = set()
+    while True:
+        added = 0
+        for addr, insn in list(tracer.seen.items()):
+            if addr in done or tracer.mode_at[addr] or (insn.raw & 0x0FFFFFF0) != 0x008FF100:
+                continue
+            done.add(addr)
+            entry = addr + 8
+            while True:
+                word = space.u32(entry)
+                if word is None or (word & 0xFF000000) != 0xEA000000:
+                    break
+                tracer.add(entry, False, None)
+                entry += 4
+                added += 1
+        if not added:
+            return
+        tracer.run()
+
+
+def function_pointers(segment, space):
+    """Words in an image that point at a function start: (addr, thumb) of an ARM or Thumb push.
+
+    A pointer to code is the only trace a callback leaves. A wrong guess only translates code
+    that never runs, so this keeps the number of rebuilds down without changing behaviour.
+    """
+    found = set()
+    for offset in range(0, len(segment.data) - 3, 4):
+        value = int.from_bytes(segment.data[offset:offset + 4], "little")
+        if value & 1:
+            halfword = space.u16(value & ~1)
+            if halfword is not None and (halfword & 0xFE00) == 0xB400:
+                found.add((value & ~1, True))
+        elif not value & 3:
+            word = space.u32(value)
+            if word is not None and (word & 0xFFFF0000) == 0xE92D0000:
+                found.add((value, False))
+    return found
+
+
+def trace(space, code, entries):
+    """Returns the blocks reached from the entries: (start, thumb, lines)."""
+    tracer = Tracer(space, code)
+    for addr, thumb in entries:
+        tracer.add(addr, thumb, "entry")
+    tracer.run()
+    follow_jump_tables(tracer, space)
+    return tracer
+
+
+def write_if_changed(path, text):
+    """Unchanged files keep their date, so only what changed is compiled again."""
+    if os.path.exists(path):
+        with open(path, newline="\n") as f:
+            if f.read() == text:
+                return
+    with open(path, "w", newline="\n") as f:
+        f.write(text)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--per-file", type=int, default=4000)
     args = ap.parse_args()
 
-    space = Space()
-    tracer = Tracer(space, list(space.segments))
-    for addr, thumb in DEFAULT_ENTRIES:
-        tracer.add(addr, thumb, "entry")
-    tracer.run()
-    seen, modes = tracer.seen, tracer.mode_at
-    print(f"instructions: {len(seen)}, undefined reached: {len(tracer.undefined)}")
+    entries = list(DEFAULT_ENTRIES)
+    overlay_entries = {ov_id: set() for ov_id in load_overlay_table()}
+    if os.path.exists(FOUND_ENTRIES):
+        with open(FOUND_ENTRIES) as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) == 3:
+                    overlay_entries[int(parts[2][2:])].add((int(parts[0], 16), parts[1] == "1"))
+                elif parts:
+                    entries.append((int(parts[0], 16), parts[1] == "1"))
 
+    main_space = Space()
+    for scene in range(SCENE_COUNT):
+        ov_id = main_space.u32(SCENE_OVERLAY + scene * 4)
+        for phase in range(3):
+            pointer = main_space.u32(SCENE_FUNCS + (scene * 3 + phase) * 4)
+            if pointer and ov_id in overlay_entries:
+                overlay_entries[ov_id].add((pointer & ~1, bool(pointer & 1)))
+
+    os.makedirs(OUT, exist_ok=True)
+    written = set()
+
+    # Overlays first: what they call in the main program has to be translated there as well.
+    overlays = []
+    for ov_id, row in sorted(load_overlay_table().items()):
+        space = Space(ov=ov_id)
+        segment = space.segments[-1]
+        image = Segment(segment.name, segment.base, segment.data)
+        found = overlay_entries[ov_id] | function_pointers(image, space)
+        code = [segment]
+        tracer = trace(space, code, sorted(found))
+        for insn in tracer.seen.values():
+            if insn.target is not None and main_space.segment_at(insn.target):
+                entries.append((insn.target, bool(insn.target_thumb)))
+        for addr, thumb in function_pointers(image, main_space):
+            entries.append((addr, thumb))
+        blocks = make_blocks(tracer, found)
+        name = f"O{ov_id:03}"
+        files = write_blocks(OUT, f"ov{ov_id:03}", name, blocks, args.per_file, written)
+        table = [f'#include "overlay.h"\n\n']
+        table += [f"void {name}_{start:08X}(Cpu&);\n" for start, _thumb, _lines in blocks]
+        table.append(f"\nextern const OverlayBlock k{name}[];\nconst OverlayBlock k{name}[] = {{\n")
+        for start, thumb, _lines in sorted(blocks, key=lambda b: b[0] | int(b[1])):
+            first = space.u16(start) if thumb else space.u32(start)
+            table.append(f"  {{0x{start | int(thumb):X}u, {name}_{start:08X}, 0x{first:X}u}},\n")
+        if not blocks:
+            table.append("  {0, nullptr, 0},\n")
+        table.append("};\n")
+        path = os.path.join(OUT, f"ov{ov_id:03}_table.cpp")
+        write_if_changed(path, "".join(table))
+        written.add(os.path.basename(path))
+        size = int(row["ram_size"], 16) + int(row["bss_size"], 16)
+        overlays.append((ov_id, segment.base, segment.base + size, name, len(blocks)))
+        print(f"{name}: {len(found)} entries, {len(tracer.seen)} instructions, "
+              f"{len(blocks)} blocks, {len(tracer.undefined)} undefined")
+
+    lines = ['#include "overlay.h"\n\n']
+    lines += [f"extern const OverlayBlock k{o[3]}[];\n" for o in overlays]
+    lines.append("\nconst OverlayInfo kOverlays[] = {\n")
+    for ov_id, start, end, name, count in overlays:
+        lines.append(f"  {{{ov_id}, 0x{start:X}u, 0x{end:X}u, k{name}, {count}}},\n")
+    lines.append(f"}};\nconst u32 kOverlayCount = {len(overlays)};\n")
+    path = os.path.join(OUT, "overlays.cpp")
+    write_if_changed(path, "".join(lines))
+    written.add("overlays.cpp")
+
+    for segment in main_space.segments:
+        entries.extend(function_pointers(segment, main_space))
+    entries = sorted(set(entries))
+    print(f"main program entries: {len(entries)}")
+    tracer = trace(main_space, list(main_space.segments), entries)
+    print(f"instructions: {len(tracer.seen)}, undefined reached: {len(tracer.undefined)}")
+    blocks = make_blocks(tracer, entries)
+    write_blocks(OUT, "main", "B", blocks, args.per_file, written)
+
+    lines = ['#include "cpu.h"\n#include <algorithm>\n#include <iterator>\n\n']
+    lines += [f"void B_{start:08X}(Cpu&);\n" for start, _thumb, _lines in blocks]
+    lines.append("\nnamespace {\nstruct Entry { u32 key; BlockFn fn; };\n")
+    lines.append("const Entry kTable[] = {\n")
+    for start, thumb, _lines in sorted(blocks, key=lambda b: b[0] | int(b[1])):
+        lines.append(f"  {{0x{start | int(thumb):X}u, B_{start:08X}}},\n")
+    lines.append("};\n}  // namespace\n\n")
+    lines.append("BlockFn find_block(u32 key) {\n"
+                 "  const Entry* end = std::end(kTable);\n"
+                 "  const Entry* hit = std::lower_bound(std::begin(kTable), end, key,\n"
+                 "      [](const Entry& e, u32 k) { return e.key < k; });\n"
+                 "  return (hit != end && hit->key == key) ? hit->fn : nullptr;\n}\n")
+    path = os.path.join(OUT, "table.cpp")
+    write_if_changed(path, "".join(lines))
+    written.add("table.cpp")
+
+    for name in os.listdir(OUT):
+        if name not in written:
+            os.remove(os.path.join(OUT, name))
+    print(f"main blocks: {len(blocks)}, overlay blocks: {sum(o[4] for o in overlays)}, "
+          f"files: {len(written)}")
+    return 0
+
+
+def write_blocks(folder, stem, prefix, blocks, per_file, written):
+    for index in range(0, len(blocks), per_file):
+        text = ['#include "cpu.h"\n\n']
+        for start, _thumb, lines in blocks[index:index + per_file]:
+            text.append(f"void {prefix}_{start:08X}(Cpu& c) {{\n")
+            text.append("\n".join(lines))
+            text.append("\n}\n\n")
+        name = f"{stem}_{index // per_file:03}.cpp"
+        write_if_changed(os.path.join(folder, name), "".join(text))
+        written.add(name)
+
+
+def make_blocks(tracer, entries):
+    seen, modes = tracer.seen, tracer.mode_at
     leaders = set()
-    for addr, thumb in DEFAULT_ENTRIES:
+    for addr, thumb in entries:
         leaders.add(addr)
     for addr, insn in seen.items():
         if insn.target is not None:
@@ -489,10 +661,6 @@ def main():
     for (addr, _thumb) in tracer.functions:
         leaders.add(addr)
     leaders &= set(seen)
-
-    os.makedirs(OUT, exist_ok=True)
-    for name in os.listdir(OUT):
-        os.remove(os.path.join(OUT, name))
 
     def statements(addr, insn):
         if modes[addr]:
@@ -530,36 +698,7 @@ def main():
                 break
             addr = following
         blocks.append((start, bool(modes[start]), lines))
-
-    files = []
-    for index in range(0, len(blocks), args.per_file):
-        part = blocks[index:index + args.per_file]
-        name = f"code_{index // args.per_file:03}.cpp"
-        files.append(name)
-        with open(os.path.join(OUT, name), "w", newline="\n") as f:
-            f.write('#include "cpu.h"\n\n')
-            for start, _thumb, lines in part:
-                f.write(f"void B_{start:08X}(Cpu& c) {{\n")
-                f.write("\n".join(lines))
-                f.write("\n}\n\n")
-
-    with open(os.path.join(OUT, "table.cpp"), "w", newline="\n") as f:
-        f.write('#include "cpu.h"\n#include <algorithm>\n#include <iterator>\n\n')
-        for start, _thumb, _lines in blocks:
-            f.write(f"void B_{start:08X}(Cpu&);\n")
-        f.write("\nnamespace {\nstruct Entry { u32 key; BlockFn fn; };\n")
-        f.write("const Entry kTable[] = {\n")
-        for start, thumb, _lines in sorted(blocks, key=lambda b: b[0] | int(b[1])):
-            f.write(f"  {{0x{start | int(thumb):X}u, B_{start:08X}}},\n")
-        f.write("};\n}  // namespace\n\n")
-        f.write("BlockFn find_block(u32 key) {\n"
-                "  const Entry* end = std::end(kTable);\n"
-                "  const Entry* hit = std::lower_bound(std::begin(kTable), end, key,\n"
-                "      [](const Entry& e, u32 k) { return e.key < k; });\n"
-                "  return (hit != end && hit->key == key) ? hit->fn : nullptr;\n}\n")
-    files.append("table.cpp")
-    print(f"blocks: {len(blocks)}, files: {len(files)}")
-    return 0
+    return blocks
 
 
 if __name__ == "__main__":

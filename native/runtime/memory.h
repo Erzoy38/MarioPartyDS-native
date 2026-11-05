@@ -14,6 +14,7 @@ struct Machine {
     std::vector<u8> oam;       // 2 KiB at 0x07000000
     std::vector<u8> vram;      // 656 KiB; bank mapping comes with the display phase
     std::vector<u8> io;        // 64 KiB of plain storage for registers not handled yet
+    const std::vector<u8>* rom = nullptr;  // the player's ROM, read through the card registers
     u32 dtcm_base = 0x027E0000;
     u32 unknown_reads = 0;
     u32 unknown_writes = 0;

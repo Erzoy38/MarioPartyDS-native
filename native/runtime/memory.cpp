@@ -1,5 +1,7 @@
 #include "memory.h"
 
+#include "hw.h"
+
 #include <cstring>
 
 Machine g_machine;
@@ -34,12 +36,8 @@ inline u8* locate(u32 addr) {
     }
 }
 
-// Registers that do not simply hold what was written.
 inline bool special_read(u32 addr, u32& value) {
-    if (addr == 0x04000006u) {  // VCOUNT: there is no display timing yet
-        value = 0;
-        return true;
-    }
+    if ((addr >> 24) == 0x04) return hw_read(addr, 4, value);
     return false;
 }
 
@@ -80,18 +78,21 @@ u32 rd32(u32 addr) {
 }
 
 void wr8(u32 addr, u8 value) {
+    if ((addr >> 24) == 0x04 && hw_write(addr, 1, value)) return;
     if (u8* p = locate(addr)) { *p = value; return; }
     ++g_machine.unknown_writes;
 }
 
 void wr16(u32 addr, u16 value) {
     addr &= ~1u;
+    if ((addr >> 24) == 0x04 && hw_write(addr, 2, value)) return;
     if (u8* p = locate(addr)) { std::memcpy(p, &value, 2); return; }
     ++g_machine.unknown_writes;
 }
 
 void wr32(u32 addr, u32 value) {
     addr &= ~3u;
+    if ((addr >> 24) == 0x04 && hw_write(addr, 4, value)) return;
     if (u8* p = locate(addr)) { std::memcpy(p, &value, 4); return; }
     ++g_machine.unknown_writes;
 }

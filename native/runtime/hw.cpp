@@ -1,0 +1,579 @@
+#include "hw.h"
+
+#include "memory.h"
+
+#include <cstdio>
+#include <cstdint>
+#include <cstring>
+#include <deque>
+#include <map>
+#include <vector>
+
+HwState g_hw;
+
+namespace {
+
+constexpr u32 kIrqEntry = 0xFFFF0018;
+constexpr u32 kIrqReturn = 0xFFFF0028;
+
+u8 g_ipc_out = 0, g_ipc_recv = 0;
+bool g_ipc_sync_irq_on = false, g_fifo_send_irq_on = false, g_fifo_recv_irq_on = false, g_fifo_on = false;
+std::deque<u32> g_fifo_to_arm9;
+u32 g_fifo_last = 0;
+std::map<u32, u32> g_tag_counts;
+
+// Stand-in for the ARM7 side of the game's message channel. A word is tag (bits 0-4), flag
+// (bit 5: the receiver's third callback argument, see 0x020675CC) and data (bits 6-31).
+// Unknown messages are logged, not guessed at.
+void arm7_reply(u32 tag, u32 data, bool flag = false) {
+    g_fifo_to_arm9.push_back(tag | (flag ? 0x20u : 0u) | (data << 6));
+    if (g_fifo_recv_irq_on) hw_raise(irq::kFifoRecv);
+}
+
+// The clock is fixed, not read from the PC: every player's game must see the same time.
+// Date and time use the layout the ARM7 writes to the shared area (BCD).
+void arm7_rtc(u32 data) {
+    constexpr u32 kDateTimeArea = 0x027FFDE8;
+    const u32 command = (data >> 8) & 0x7F;
+    wr32(kDateTimeArea, 0x03010106);       // 2006-01-01, weekday in the top byte
+    wr32(kDateTimeArea + 4, 0x00000012);   // 12:00:00
+    arm7_reply(5, command << 8);           // result 0: success
+}
+
+// The save memory on the card, as the ARM7 card thread serves it (arm7.bin file offset 0x8340).
+// The game fills a shared block and sends a command; the block's first word is the result.
+// Held in memory only for now: nothing is read from or written to a save file.
+namespace backup {
+constexpr u32 kResultOk = 0, kResultVerifyFailed = 1, kResultBadAlignment = 2, kResultUnsupported = 3;
+constexpr u32 kResult = 0x00, kCardId = 0x08, kRamOrSave = 0x0C, kSaveOrRam = 0x10, kLength = 0x14;
+constexpr u32 kTotalSize = 0x18, kSectorSize = 0x1C, kAllowedCommands = 0x4C;
+
+u32 g_block = 0;          // address of the shared block
+bool g_wait_block = false;
+std::vector<u8> g_memory;
+
+u8& at(u32 address) {
+    const u32 total = rd32(g_block + kTotalSize);
+    const u32 size = total ? total : 1;
+    if (g_memory.size() != size) g_memory.assign(size, 0xFF);  // erased
+    return g_memory[address % size];
+}
+
+void run(u32 command) {
+    wr32(g_block + kResult, kResultOk);
+    if (!(rd32(g_block + kAllowedCommands) & (1u << command))) {
+        wr32(g_block + kResult, kResultUnsupported);
+        return;
+    }
+    const u32 a = rd32(g_block + kRamOrSave);
+    const u32 b = rd32(g_block + kSaveOrRam);
+    const u32 length = rd32(g_block + kLength);
+    switch (command) {
+        case 0:    // start
+        case 1:    // acknowledge
+        case 2:    // identify: the ARM7 only sets up its chip access here
+            break;
+        case 3:    // card id
+            wr32(g_block + kCardId, 0x00001FC2);
+            break;
+        case 6:    // read: save address a to RAM address b
+            for (u32 i = 0; i < length; ++i) wr8(b + i, at(a + i));
+            break;
+        case 7:    // write: RAM address a to save address b
+        case 8:    // program
+            for (u32 i = 0; i < length; ++i) at(b + i) = rd8(a + i);
+            break;
+        case 9: {  // verify
+            for (u32 i = 0; i < length; ++i) {
+                if (at(b + i) != rd8(a + i)) {
+                    wr32(g_block + kResult, kResultVerifyFailed);
+                    break;
+                }
+            }
+            break;
+        }
+        case 11: { // erase sectors
+            const u32 sector = rd32(g_block + kSectorSize);
+            if ((b | length) & (sector - 1)) {
+                wr32(g_block + kResult, kResultBadAlignment);
+                break;
+            }
+            for (u32 i = 0; i < length; ++i) at(b + i) = 0xFF;
+            break;
+        }
+        case 12:   // erase the chip
+            at(0);
+            g_memory.assign(g_memory.size(), 0xFF);
+            break;
+        default:
+            wr32(g_block + kResult, kResultUnsupported);
+            break;
+    }
+}
+
+void receive(u32 data) {
+    u32 command = data;
+    if (g_wait_block) {
+        g_wait_block = false;
+        g_block = data;
+        command = 0;
+    } else if (data == 0) {
+        g_wait_block = true;   // the start command is followed by the block's address
+        return;
+    } else if (g_block == 0) {
+        runtime_abort("save command before the start command", data);
+    }
+    run(command);
+    arm7_reply(11, 1, true);   // arm7.bin 0x85B4: tag 11, data 1, flag set
+}
+}  // namespace backup
+
+// Power and sound-chip settings. A request spans several words; bits 24-25 count down to 1 on
+// the last. The reply is the command with a result byte (see the callback at 0x0206B34C).
+// The settings change nothing here, so each one is accepted and logged.
+void arm7_power(u32 data) {
+    static u32 first_word = 0;
+    static bool in_request = false;
+    const u32 words_left = (data >> 24) & 3;
+    if (!in_request) {
+        first_word = data;
+        in_request = true;
+    }
+    if (words_left > 1) return;
+    in_request = false;
+    if (++g_tag_counts[8] <= 12) {
+        std::printf("power request %#x, last word %#x: accepted\n", first_word, data);
+    }
+    arm7_reply(8, first_word & 0x7F00);  // result 0
+}
+
+// Touch screen. The game asks for one sample (request at 0x0206A8E4); the ARM7 leaves it at
+// 0x027FFFAA and replies with bit 24 set, command 0, result 0 (callback at 0x0206A430).
+// Word layout: x bits 0-11, y bits 12-23, touched bit 24, validity bits 25-26.
+// Nobody is touching the screen yet: the input layer comes with the window.
+void arm7_touch(u32 data) {
+    constexpr u32 kSampleRequest = 0x03000000;
+    constexpr u32 kTouchArea = 0x027FFFAA;
+    if (data != kSampleRequest) {
+        if (++g_tag_counts[6] <= 12) std::printf("touch request %#x: not handled\n", data);
+        return;
+    }
+    wr16(kTouchArea, 0);
+    wr16(kTouchArea + 2, 0);
+    arm7_reply(6, 0x01000000);
+}
+
+// Sound commands. The game sends a chain of 0x18-byte commands (next at +0, id at +4, arguments
+// from +8) and counts a chain as done when the first word of a shared block moves on (see
+// 0x02066A84 and 0x02066E24). Command 0x1D names that block. A word of 0 only wakes the ARM7.
+// Commands are consumed without making sound: sound output is a later phase.
+void arm7_sound(u32 data) {
+    constexpr u32 kCommandSharedBlock = 0x1D;
+    static u32 shared_block = 0;
+    static bool seen_id[256];
+    if (data == 0) return;
+    for (u32 command = data; command != 0; command = rd32(command)) {
+        const u32 id = rd32(command + 4);
+        if (id == kCommandSharedBlock) shared_block = rd32(command + 8);
+        if (id < 256 && !seen_id[id]) {
+            seen_id[id] = true;
+            std::printf("sound command %#x: consumed, no sound\n", id);
+        }
+    }
+    if (shared_block == 0) runtime_abort("sound command before the shared block is known", data);
+    wr32(shared_block, rd32(shared_block) + 1);
+}
+
+void arm7_receive(u32 word) {
+    const u32 tag = word & 31;
+    const u32 data = word >> 6;
+    if (tag == 5) {
+        arm7_rtc(data);
+        return;
+    }
+    if (tag == 11) {
+        backup::receive(data);
+        return;
+    }
+    if (tag == 8) {
+        arm7_power(data);
+        return;
+    }
+    if (tag == 6) {
+        arm7_touch(data);
+        return;
+    }
+    if (tag == 7) {
+        arm7_sound(data);
+        return;
+    }
+    if (++g_tag_counts[tag] <= 12) {
+        std::printf("PXI to ARM7: tag %u data %#x\n", tag, data);
+    }
+}
+
+u32 io32(u32 offset) {
+    u32 value;
+    std::memcpy(&value, &g_machine.io[offset], 4);
+    return value;
+}
+void set_io32(u32 offset, u32 value) { std::memcpy(&g_machine.io[offset], &value, 4); }
+u16 io16(u32 offset) {
+    u16 value;
+    std::memcpy(&value, &g_machine.io[offset], 2);
+    return value;
+}
+void set_io16(u32 offset, u16 value) { std::memcpy(&g_machine.io[offset], &value, 2); }
+
+// What the BIOS does on an interrupt: save registers, call the handler the game stored at
+// the top of DTCM, and restore on return.
+void bios_irq_entry(Cpu& c) {
+    u32 sp = c.r[13] - 24;
+    c.r[13] = sp;
+    wr32(sp, c.r[0]);
+    wr32(sp + 4, c.r[1]);
+    wr32(sp + 8, c.r[2]);
+    wr32(sp + 12, c.r[3]);
+    wr32(sp + 16, c.r[12]);
+    wr32(sp + 20, c.r[14]);
+    c.r[0] = 0x04000000;
+    c.r[14] = kIrqReturn;
+    c.branch_exchange(rd32(g_machine.dtcm_base + 0x3FFC));
+}
+
+void bios_irq_return(Cpu& c) {
+    u32 sp = c.r[13];
+    c.r[0] = rd32(sp);
+    c.r[1] = rd32(sp + 4);
+    c.r[2] = rd32(sp + 8);
+    c.r[3] = rd32(sp + 12);
+    c.r[12] = rd32(sp + 16);
+    c.r[14] = rd32(sp + 20);
+    c.r[13] = sp + 24;
+    c.exception_return(c.r[14] - 4);
+}
+
+// DMA ---------------------------------------------------------------------------------------
+void dma_run(int channel) {
+    const u32 base = 0xB0 + channel * 12;
+    u32 src = io32(base), dst = io32(base + 4);
+    const u32 control = io32(base + 8);
+    u32 count = control & 0x1FFFFF;
+    if (count == 0) count = 0x200000;
+    const bool words = control >> 26 & 1;
+    const u32 step = words ? 4 : 2;
+    const u32 dst_mode = (control >> 21) & 3, src_mode = (control >> 23) & 3;
+    u32 d = dst, s = src;
+    for (u32 i = 0; i < count; ++i) {
+        if (words) wr32(d, rd32(s)); else wr16(d, rd16(s));
+        if (dst_mode == 0 || dst_mode == 3) d += step; else if (dst_mode == 1) d -= step;
+        if (src_mode == 0) s += step; else if (src_mode == 1) s -= step;
+    }
+    set_io32(base, s);
+    if (dst_mode != 3) set_io32(base + 4, d);
+    const bool repeat = control >> 25 & 1;
+    const u32 timing = (control >> 27) & 7;
+    if (!repeat || timing == 0) set_io32(base + 8, control & 0x7FFFFFFFu);
+    if (control >> 30 & 1) hw_raise(1u << (8 + channel));
+}
+
+void dma_trigger(u32 timing) {
+    for (int channel = 0; channel < 4; ++channel) {
+        const u32 control = io32(0xB0 + channel * 12 + 8);
+        if ((control >> 31) && ((control >> 27) & 7) == timing) dma_run(channel);
+    }
+}
+
+// Timers: counted from blocks, so they are exactly repeatable.
+constexpr u32 kCyclesPerBlock = 11;
+u32 g_timer_counter[4] = {};
+u32 g_timer_reload[4] = {};
+u32 g_timer_control[4] = {};
+u32 g_timer_rest[4] = {};
+
+void timers_step() {
+    bool overflow_previous = false;
+    for (int t = 0; t < 4; ++t) {
+        const u32 control = g_timer_control[t];
+        bool overflow = false;
+        if (control & 0x80) {
+            u32 ticks = 0;
+            if (control & 4) {
+                ticks = (t > 0 && overflow_previous) ? 1 : 0;
+            } else {
+                static const u32 kDividers[4] = {1, 64, 256, 1024};
+                const u32 divider = kDividers[control & 3];
+                g_timer_rest[t] += kCyclesPerBlock;
+                ticks = g_timer_rest[t] / divider;
+                g_timer_rest[t] %= divider;
+            }
+            g_timer_counter[t] += ticks;
+            while (g_timer_counter[t] >= 0x10000) {
+                g_timer_counter[t] = g_timer_counter[t] - 0x10000 + g_timer_reload[t];
+                overflow = true;
+                if (control & 0x40) hw_raise(irq::kTimer0 << t);
+            }
+        }
+        overflow_previous = overflow;
+    }
+}
+
+// Math accelerator ----------------------------------------------------------------------------
+u64 io64(u32 offset) {
+    u64 value;
+    std::memcpy(&value, &g_machine.io[offset], 8);
+    return value;
+}
+void set_io64(u32 offset, u64 value) { std::memcpy(&g_machine.io[offset], &value, 8); }
+
+void divide() {
+    const u32 mode = io16(0x280) & 3;
+    const s64 numerator = mode == 0 ? s64(s32(io32(0x290))) : s64(io64(0x290));
+    const s64 denominator = mode == 1 || mode == 0 ? s64(s32(io32(0x298))) : s64(io64(0x298));
+    set_io16(0x280, u16(io16(0x280) & ~0x4000u) | (io64(0x298) == 0 ? 0x4000 : 0));
+    if (denominator == 0) {
+        set_io64(0x2A0, numerator < 0 ? 1 : u64(-1));
+        set_io64(0x2A8, u64(numerator));
+        return;
+    }
+    if (numerator == INT64_MIN && denominator == -1) {
+        set_io64(0x2A0, u64(numerator));
+        set_io64(0x2A8, 0);
+        return;
+    }
+    set_io64(0x2A0, u64(numerator / denominator));
+    set_io64(0x2A8, u64(numerator % denominator));
+}
+
+void square_root() {
+    const bool wide = io16(0x2B0) & 1;
+    u64 value = wide ? io64(0x2B8) : io32(0x2B8);
+    u64 root = 0, bit = u64(1) << 62;
+    while (bit > value) bit >>= 2;
+    while (bit) {
+        if (value >= root + bit) {
+            value -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    set_io32(0x2B4, u32(root));
+}
+
+// Game card ---------------------------------------------------------------------------------
+// The game reads the card through registers: an 8-byte command, then words from 0x04100010,
+// often by DMA. Only what comes back matters here, so the card's encryption does not apply.
+constexpr u32 kChipId = 0x00001FC2;  // as melonDS reports it for this ROM
+u32 g_card_addr = 0, g_card_left = 0;
+bool g_card_is_id = false;
+
+void card_finish() {
+    set_io32(0x1A4, io32(0x1A4) & ~0x80800000u);
+    if (io16(0x1A0) & 0x4000) hw_raise(1u << 19);
+}
+
+u32 card_next_word() {
+    if (g_card_left == 0) return 0;
+    u32 value = kChipId;
+    if (!g_card_is_id) {
+        const std::vector<u8>& rom = *g_machine.rom;
+        const u32 at = g_card_addr < 0x8000 ? 0x8000 + (g_card_addr & 0x1FF) : g_card_addr;
+        value = 0;
+        if (at + 4 <= rom.size()) std::memcpy(&value, &rom[at], 4);
+        g_card_addr += 4;
+    }
+    g_card_left -= 4;
+    if (g_card_left == 0) card_finish();
+    return value;
+}
+
+void card_start(u32 control) {
+    const u8* command = &g_machine.io[0x1A8];
+    const u32 code = (control >> 24) & 7;
+    static const u32 kSizes[8] = {0, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000, 4};
+    g_card_left = kSizes[code];
+    g_card_is_id = command[0] == 0xB8;
+    g_card_addr = (u32(command[1]) << 24) | (u32(command[2]) << 16) | (u32(command[3]) << 8) | command[4];
+    if (command[0] != 0xB7 && command[0] != 0xB8) {
+        static int shown = 0;
+        if (shown++ < 8) std::printf("card command %02x not handled\n", command[0]);
+        g_card_left = 0;
+    }
+    set_io32(0x1A4, control | (g_card_left ? 0x80800000u : 0));
+    if (g_card_left == 0) {
+        card_finish();
+        return;
+    }
+    // A DMA channel set to card timing takes each word as it becomes ready.
+    for (int channel = 0; channel < 4 && g_card_left; ++channel) {
+        const u32 base = 0xB0 + channel * 12;
+        const u32 dma = io32(base + 8);
+        if ((dma >> 31) && ((dma >> 27) & 7) == 5) {
+            while (g_card_left && (io32(base + 8) >> 31)) dma_run(channel);
+        }
+    }
+}
+
+void next_line() {
+    g_hw.line_blocks = 0;
+    ++g_hw.line;
+    if (g_hw.line >= kLinesPerFrame) {
+        g_hw.line = 0;
+        ++g_hw.frames;
+    }
+    u16 stat = io16(0x04);
+    const bool vblank_line = g_hw.line >= kFirstVBlankLine && g_hw.line < kLinesPerFrame - 1;
+    if (g_hw.line == kFirstVBlankLine) {
+        if (stat & 0x08) hw_raise(irq::kVBlank);
+        dma_trigger(1);
+    }
+    if (g_hw.line < kFirstVBlankLine) dma_trigger(2);  // HBlank
+    stat = u16((stat & ~1u) | (vblank_line ? 1u : 0u));
+    const u32 target = (stat >> 8) | ((stat & 0x80u) << 1);
+    const bool match = g_hw.line == target;
+    stat = u16((stat & ~4u) | (match ? 4u : 0u));
+    if (match && (stat & 0x20)) hw_raise(irq::kVCount);
+    set_io16(0x04, stat);
+}
+
+}  // namespace
+
+void hw_raise(u32 flags) { set_io32(0x214, io32(0x214) | flags); }
+
+void hw_step(Cpu& c) {
+    if (++g_hw.line_blocks >= kBlocksPerLine) next_line();
+    timers_step();
+    const u32 pending = io32(0x210) & io32(0x214);
+    if (!pending) return;
+    g_hw.halted = false;
+    if ((io16(0x208) & 1) && !c.irq_off) {
+        const u32 old = c.cpsr();
+        const u32 return_to = c.pc + 4;
+        c.switch_mode(kIrq);
+        c.spsr = old;
+        c.r[14] = return_to;
+        c.irq_off = 1;
+        c.thumb = 0;
+        c.pc = kIrqEntry;
+    }
+}
+
+bool hw_read(u32 addr, u32 size, u32& value) {
+    (void)size;
+    if (addr >= 0x04000100 && addr < 0x04000110) {
+        const int timer = (addr - 0x04000100) / 4;
+        if (addr & 2) {
+            value = g_timer_control[timer];
+        } else {
+            value = (g_timer_counter[timer] & 0xFFFF) | (g_timer_control[timer] << 16);
+        }
+        return true;
+    }
+    switch (addr) {
+        case 0x04100010: value = card_next_word(); return true;
+        case 0x04000006: value = g_hw.line; return true;
+        case 0x04000130: value = 0x03FF; return true;  // KEYINPUT: low means pressed, none yet
+        case 0x04000180:  // IPCSYNC: low nibble comes from the ARM7
+            value = g_ipc_recv | (u32(g_ipc_out) << 8) | (g_ipc_sync_irq_on ? 0x4000u : 0);
+            return true;
+        case 0x04000184:  // IPCFIFOCNT; the ARM7 stand-in takes words at once, so send is empty
+            value = 1u | (g_fifo_send_irq_on ? 4u : 0) | (g_fifo_to_arm9.empty() ? 0x100u : 0)
+                    | (g_fifo_recv_irq_on ? 0x400u : 0) | (g_fifo_on ? 0x8000u : 0);
+            return true;
+        case 0x04100000:  // IPCFIFORECV
+            if (g_fifo_to_arm9.empty()) {
+                value = g_fifo_last;
+            } else {
+                value = g_fifo_last = g_fifo_to_arm9.front();
+                g_fifo_to_arm9.pop_front();
+            }
+            return true;
+        default: return false;
+    }
+}
+
+bool hw_write(u32 addr, u32 size, u32 value) {
+    if (addr >= 0x04000100 && addr < 0x04000110) {
+        const int timer = (addr - 0x04000100) / 4;
+        const auto set_control = [&](u32 control) {
+            if ((control & 0x80) && !(g_timer_control[timer] & 0x80)) {
+                g_timer_counter[timer] = g_timer_reload[timer];
+                g_timer_rest[timer] = 0;
+            }
+            g_timer_control[timer] = control & 0xFFFF;
+        };
+        if (addr & 2) {
+            set_control(value & 0xFFFF);
+        } else {
+            g_timer_reload[timer] = value & 0xFFFF;
+            if (size == 4) set_control(value >> 16);
+        }
+        return true;
+    }
+    if (addr >= 0x040000B0 && addr < 0x040000E0) {  // DMA
+        const u32 offset = addr & 0xFFFF;
+        const u32 relative = (offset - 0xB0) % 12;
+        if (size == 4) set_io32(offset, value);
+        else if (size == 2) set_io16(offset, u16(value));
+        else g_machine.io[offset] = u8(value);
+        if (relative >= 8) {
+            const int channel = (offset - 0xB0) / 12;
+            const u32 control = io32(0xB0 + channel * 12 + 8);
+            if ((control >> 31) && ((control >> 27) & 7) == 0) dma_run(channel);
+        }
+        return true;
+    }
+    if (addr >= 0x04000280 && addr < 0x040002C0) {  // math
+        const u32 offset = addr & 0xFFFF;
+        if (size == 4) set_io32(offset, value);
+        else if (size == 2) set_io16(offset, u16(value));
+        else g_machine.io[offset] = u8(value);
+        if (offset < 0x2B0) divide(); else square_root();
+        return true;
+    }
+    if (addr == 0x040001A4 && size == 4) {  // card control
+        if (value >> 31) {
+            card_start(value & 0x7F7FFFFFu);
+        } else {
+            set_io32(0x1A4, value);
+        }
+        return true;
+    }
+    if (addr == 0x04000180) {  // IPCSYNC
+        g_ipc_out = u8((value >> 8) & 15);
+        g_ipc_sync_irq_on = value >> 14 & 1;
+        // The game counts through values with the ARM7 during PXI setup; answer one higher.
+        g_ipc_recv = u8((g_ipc_out + 1) & 15);
+        return true;
+    }
+    if (addr == 0x04000184) {  // IPCFIFOCNT
+        g_fifo_send_irq_on = value >> 2 & 1;
+        g_fifo_recv_irq_on = value >> 10 & 1;
+        g_fifo_on = value >> 15 & 1;
+        if (value & 8) g_fifo_to_arm9.clear();
+        return true;
+    }
+    if (addr == 0x04000188) {  // IPCFIFOSEND
+        arm7_receive(value);
+        return true;
+    }
+    if (addr == 0x04000214) {  // IF: writing 1 clears a flag
+        const u32 mask = size == 4 ? value : size == 2 ? (value & 0xFFFF) : (value & 0xFF);
+        set_io32(0x214, io32(0x214) & ~mask);
+        return true;
+    }
+    if (addr == 0x04000004 && size >= 2) {  // DISPSTAT: flag bits are read only
+        const u16 old = io16(0x04);
+        set_io16(0x04, u16((value & 0xFFB8) | (old & 7)));
+        return true;
+    }
+    return false;
+}
+
+BlockFn bios_block(u32 pc) {
+    if (pc == kIrqEntry) return bios_irq_entry;
+    if (pc == kIrqReturn) return bios_irq_return;
+    return nullptr;
+}
