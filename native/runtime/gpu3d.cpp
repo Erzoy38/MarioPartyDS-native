@@ -263,14 +263,16 @@ void add_polygon(std::vector<Vertex> vertices) {
     float y_min = 1e9f, y_max = -1e9f;
     for (Vertex& v : vertices) {
         const float w = v.w <= 0 ? 1.0f : v.w;
-        v.x = x1 + (v.x / w + 1) * vw / 2;
-        v.y = (kHeight - 1 - y2) + (1 - v.y / w) * vh / 2;
+        // The hardware keeps whole pixels here, and samples at those positions without an offset.
+        v.x = std::floor(x1 + (v.x / w + 1) * vw / 2);
+        v.y = std::floor((kHeight - 1 - y2) + (1 - v.y / w) * vh / 2);
         v.z = (v.z / w + 1) / 2;
         y_min = std::min(y_min, v.y);
         y_max = std::max(y_max, v.y);
     }
 
-    // Clockwise on screen is the front.
+    // Counter-clockwise on screen is the front: seen on the board, where floors only render their
+    // front and go missing the other way round. `area` is positive for clockwise, as y runs down.
     float area = 0;
     for (std::size_t i = 1; i + 1 < vertices.size(); ++i) {
         const Vertex& a = vertices[0];
@@ -278,7 +280,7 @@ void add_polygon(std::vector<Vertex> vertices) {
         const Vertex& c = vertices[i + 1];
         area += (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
     }
-    const bool front = area > 0;
+    const bool front = area < 0;
     if (front ? !(attr & 0x80) : !(attr & 0x40)) {
         ++g_debug.culled;
         return;
@@ -368,7 +370,7 @@ void add_vertex() {
 
 struct Pixel {
     float depth[kHeight][kWidth];
-    u32 color[kHeight][kWidth];   // 0-14 colour, 16-20 alpha
+    u32 color[kHeight][kWidth];   // 6 bits per channel in 0-17, alpha in 18-22
     u8 id[kHeight][kWidth];       // polygon id of the opaque pixel
     s16 translucent_id[kHeight][kWidth];
     bool fog[kHeight][kWidth];
@@ -499,11 +501,18 @@ TexelRead sample(const Polygon& p, s32 s, s32 t) {
     }
 }
 
-u32 mix5(u32 src, u32 dst, u32 alpha) {
+// Colours are mixed in 6 bits per channel, as the hardware does: r | g << 6 | b << 12.
+u32 expand6(u32 c5) { return c5 * 2 + (c5 ? 1 : 0); }
+
+u32 color15_to_18(u32 c) {
+    return expand6(c & 31) | (expand6((c >> 5) & 31) << 6) | (expand6((c >> 10) & 31) << 12);
+}
+
+u32 mix18(u32 src, u32 dst, u32 alpha) {
     u32 out = 0;
-    for (int shift = 0; shift < 15; shift += 5) {
-        const u32 cs = (src >> shift) & 31, cd = (dst >> shift) & 31;
-        out |= ((cs * (alpha + 1) + cd * (31 - alpha)) / 32) << shift;
+    for (int shift = 0; shift < 18; shift += 6) {
+        const u32 cs = (src >> shift) & 63, cd = (dst >> shift) & 63;
+        out |= ((cs * (alpha + 1) + cd * (31 - alpha)) >> 5) << shift;
     }
     return out;
 }
@@ -511,42 +520,50 @@ u32 mix5(u32 src, u32 dst, u32 alpha) {
 // One polygon's colour at a pixel, from the interpolated vertex colour and the texture.
 void shade(const Polygon& p, float r, float g, float b, float s, float t, u32 poly_alpha, u32 disp,
            u32& out_color, u32& out_alpha) {
-    u32 vr = u32(std::clamp(r + 0.5f, 0.0f, 31.0f));
-    u32 vg = u32(std::clamp(g + 0.5f, 0.0f, 31.0f));
-    u32 vb = u32(std::clamp(b + 0.5f, 0.0f, 31.0f));
+    // Vertex colours in 6 bits.
+    u32 vr = u32(std::clamp(r * 2.0f + 1.0f, 0.0f, 63.0f));
+    u32 vg = u32(std::clamp(g * 2.0f + 1.0f, 0.0f, 63.0f));
+    u32 vb = u32(std::clamp(b * 2.0f + 1.0f, 0.0f, 63.0f));
+    if (r <= 0) vr = 0;
+    if (g <= 0) vg = 0;
+    if (b <= 0) vb = 0;
     const u32 mode = (p.attr >> 4) & 3;
     u32 toon_add = 0;
+    bool highlight = false;
     if (mode == 2) {
-        const u16 toon = io16_at(0x380 + vr * 2);
-        vr = toon & 31;
-        vg = (toon >> 5) & 31;
-        vb = (toon >> 10) & 31;
+        const u16 toon = io16_at(0x380 + (vr >> 1) * 2);
+        const u32 toon18 = color15_to_18(toon);
+        vr = toon18 & 63;
+        vg = (toon18 >> 6) & 63;
+        vb = (toon18 >> 12) & 63;
         if (disp & 2) {  // highlight shading adds the same colour again afterwards
-            toon_add = toon;
+            toon_add = toon18;
+            highlight = true;
         }
     }
     const u32 format = (p.tex_param >> 26) & 7;
     u32 alpha = poly_alpha == 0 ? 31 : poly_alpha;
     if (format != 0 && (disp & 1)) {
         const TexelRead texel = sample(p, s32(std::floor(s)), s32(std::floor(t)));
-        const u32 tr = texel.color & 31, tg = (texel.color >> 5) & 31, tb = (texel.color >> 10) & 31;
+        const u32 tr = expand6(texel.color & 31), tg = expand6((texel.color >> 5) & 31);
+        const u32 tb = expand6((texel.color >> 10) & 31);
         if (mode == 1) {  // decal
-            vr = (tr * texel.alpha + vr * (31 - texel.alpha)) / 31;
-            vg = (tg * texel.alpha + vg * (31 - texel.alpha)) / 31;
-            vb = (tb * texel.alpha + vb * (31 - texel.alpha)) / 31;
+            vr = (tr * texel.alpha + vr * (31 - texel.alpha)) >> 5;
+            vg = (tg * texel.alpha + vg * (31 - texel.alpha)) >> 5;
+            vb = (tb * texel.alpha + vb * (31 - texel.alpha)) >> 5;
         } else {  // modulation, also for toon
-            vr = ((tr * 2 + 2) * (vr * 2 + 2) - 1) >> 7;
-            vg = ((tg * 2 + 2) * (vg * 2 + 2) - 1) >> 7;
-            vb = ((tb * 2 + 2) * (vb * 2 + 2) - 1) >> 7;
+            vr = ((tr + 1) * (vr + 1) - 1) >> 6;
+            vg = ((tg + 1) * (vg + 1) - 1) >> 6;
+            vb = ((tb + 1) * (vb + 1) - 1) >> 6;
             alpha = ((texel.alpha + 1) * (alpha + 1) - 1) >> 5;
         }
     }
-    if (toon_add) {
-        vr = std::min(31u, vr + (toon_add & 31));
-        vg = std::min(31u, vg + ((toon_add >> 5) & 31));
-        vb = std::min(31u, vb + ((toon_add >> 10) & 31));
+    if (highlight) {
+        vr = std::min(63u, vr + (toon_add & 63));
+        vg = std::min(63u, vg + ((toon_add >> 6) & 63));
+        vb = std::min(63u, vb + ((toon_add >> 12) & 63));
     }
-    out_color = vr | (vg << 5) | (vb << 10);
+    out_color = vr | (vg << 6) | (vb << 12);
     out_alpha = alpha;
 }
 
@@ -585,9 +602,9 @@ void draw_triangle(const Polygon& p, const Vertex& a, const Vertex& b, const Ver
     const bool tl0 = top_left(b, c), tl1 = top_left(c, a), tl2 = top_left(a, b);
 
     for (int y = y_start; y <= y_end; ++y) {
-        const float py = float(y) + 0.5f;
+        const float py = float(y);
         for (int x = x_start; x <= x_end; ++x) {
-            const float px = float(x) + 0.5f;
+            const float px = float(x);
             const float e0 = ((c.x - b.x) * (py - b.y) - (c.y - b.y) * (px - b.x)) * sign;
             const float e1 = ((a.x - c.x) * (py - c.y) - (a.y - c.y) * (px - c.x)) * sign;
             const float e2 = ((b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x)) * sign;
@@ -626,7 +643,7 @@ void draw_triangle(const Polygon& p, const Vertex& a, const Vertex& b, const Ver
             if (alpha_test && alpha <= alpha_ref) continue;
 
             if (alpha == 31) {
-                g_pixels->color[y][x] = color | (31u << 16);
+                g_pixels->color[y][x] = color | (31u << 18);
                 buffered = depth;
                 g_pixels->id[y][x] = u8(id);
                 g_pixels->fog[y][x] = fog;
@@ -634,11 +651,11 @@ void draw_triangle(const Polygon& p, const Vertex& a, const Vertex& b, const Ver
                 if (g_pixels->translucent_id[y][x] == s16(id)) continue;  // same id does not overlap
                 g_pixels->translucent_id[y][x] = s16(id);
                 const u32 under = g_pixels->color[y][x];
-                const u32 under_alpha = (under >> 16) & 31;
+                const u32 under_alpha = (under >> 18) & 31;
                 if (blend && under_alpha != 0) {
-                    g_pixels->color[y][x] = mix5(color, under & 0x7FFF, alpha) | (std::max(alpha, under_alpha) << 16);
+                    g_pixels->color[y][x] = mix18(color, under & 0x3FFFF, alpha) | (std::max(alpha, under_alpha) << 18);
                 } else {
-                    g_pixels->color[y][x] = color | (alpha << 16);
+                    g_pixels->color[y][x] = color | (alpha << 18);
                 }
                 if (update_depth_translucent) buffered = depth;
                 g_pixels->fog[y][x] = g_pixels->fog[y][x] && fog;
@@ -658,15 +675,16 @@ void apply_edges_and_fog(u32 disp) {
                     return g_pixels->id[ny][nx] != id && depth < g_pixels->depth[ny][nx];
                 };
                 if (differs(x - 1, y) || differs(x + 1, y) || differs(x, y - 1) || differs(x, y + 1)) {
-                    const u32 alpha = (g_pixels->color[y][x] >> 16) & 31;
-                    g_pixels->color[y][x] = u32(io16_at(0x330 + (id >> 3) * 2) & 0x7FFF) | (alpha << 16);
+                    const u32 alpha = (g_pixels->color[y][x] >> 18) & 31;
+                    g_pixels->color[y][x] = color15_to_18(io16_at(0x330 + (id >> 3) * 2) & 0x7FFF) | (alpha << 18);
                 }
             }
         }
     }
     if (disp & 0x80) {  // fog from a table over the depth range
-        const u32 fog_color = io32_at(0x358);
-        const u32 fog_alpha_value = (fog_color >> 16) & 31;
+        const u32 fog_raw = io32_at(0x358);
+        const u32 fog_color = color15_to_18(fog_raw & 0x7FFF);
+        const u32 fog_alpha_value = (fog_raw >> 16) & 31;
         const u32 offset = io16_at(0x35C) & 0x7FFF;
         const u32 shift = (disp >> 8) & 15;
         const bool alpha_only = disp & 0x40;
@@ -685,13 +703,13 @@ void apply_edges_and_fog(u32 disp) {
                 if (density >= 127) density = 128;
                 const u32 pixel = g_pixels->color[y][x];
                 u32 out = 0;
-                for (int s = 0; s < 15; s += 5) {
-                    const u32 c = (pixel >> s) & 31, f = (fog_color >> s) & 31;
+                for (int s = 0; s < 18; s += 6) {
+                    const u32 c = (pixel >> s) & 63, f = (fog_color >> s) & 63;
                     out |= alpha_only ? (c << s) : (((f * density + c * (128 - density)) >> 7) << s);
                 }
-                const u32 alpha = (pixel >> 16) & 31;
+                const u32 alpha = (pixel >> 18) & 31;
                 const u32 new_alpha = (fog_alpha_value * density + alpha * (128 - density)) >> 7;
-                g_pixels->color[y][x] = out | (new_alpha << 16);
+                g_pixels->color[y][x] = out | (new_alpha << 18);
             }
         }
     }
@@ -706,7 +724,7 @@ void draw_list() {
 
     // Clear to the colour and depth the game set.
     const u32 clear = io32_at(0x350);
-    const u32 clear_color = (clear & 0x7FFF) | (((clear >> 16) & 31) << 16);
+    const u32 clear_color = color15_to_18(clear & 0x7FFF) | (((clear >> 16) & 31) << 18);
     const u8 clear_id = u8((clear >> 24) & 63);
     const bool clear_fog = clear & 0x8000;
     const u32 clear_depth15 = io16_at(0x354) & 0x7FFF;

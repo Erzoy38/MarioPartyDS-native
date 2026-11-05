@@ -12,8 +12,8 @@ u32 gpu3d_read(u32 addr);                         // 0x04000600 to 0x040006A3
 void gpu3d_write_status(u32 value);               // GXSTAT
 void gpu3d_vblank();                              // a waiting list is swapped in and drawn
 
-// One line of the last finished picture. Colour in bits 0-14, alpha 0-31 in bits 16-20; alpha 0
-// means nothing is there.
+// One line of the last finished picture: 6 bits each of red, green and blue in bits 0-17, alpha
+// 0-31 in bits 18-22. Alpha 0 means nothing is there.
 const u32* gpu3d_line(u32 line);
 
 struct Gpu3dStats {

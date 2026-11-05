@@ -80,6 +80,7 @@ struct Line {
     u8 obj_alpha[kScreenWidth];   // 0 normal, 0x80 semi-transparent, 0xC0 | alpha for bitmaps
     bool obj_window[kScreenWidth];
     u8 bg0_alpha[kScreenWidth];   // from the 3D picture: 1 to 31; 0 when background 0 is not 3D
+    u32 bg0_rgb[kScreenWidth];    // its colour, keeping the 3D picture's 6 bits per channel
 };
 Line g_line;
 
@@ -435,24 +436,31 @@ void merge_layers(const Engine& e, u32 dispcnt, const u8* mask, u8* rgba) {
                 else { under = b; under_color = color; }
             }
         }
-        Rgb6 out = to_rgb6(top_color);
+        const auto layer_rgb = [&](int layer, u16 color) -> Rgb6 {
+            if (layer == 0 && g_line.bg0_alpha[x] != 0) {
+                const u32 c = g_line.bg0_rgb[x];
+                return {c & 63, (c >> 6) & 63, (c >> 12) & 63};
+            }
+            return to_rgb6(color);
+        };
+        Rgb6 out = layer_rgb(top, top_color);
         const bool under_ok = bldcnt & (1u << (8 + under));
         const u8 alpha = top == kObj ? g_line.obj_alpha[x] : 0;
         if ((alpha & 0x80) && under_ok) {
             const bool bitmap = alpha & 0x40;
             const u32 a = bitmap ? ((alpha & 15u) + 1) : eva;
             const u32 b = bitmap ? 16 - a : evb;
-            out = mix(out, to_rgb6(under_color), a, b);
+            out = mix(out, layer_rgb(under, under_color), a, b);
         } else if (top == 0 && g_line.bg0_alpha[x] != 0 && g_line.bg0_alpha[x] < 31 && under_ok) {
             // A translucent 3D pixel blends by its own alpha, whatever the blend mode says.
-            const Rgb6 below = to_rgb6(under_color);
+            const Rgb6 below = layer_rgb(under, under_color);
             const u32 a = g_line.bg0_alpha[x] + 1u, b = 32 - a;
             out = {std::min(63u, (out.r * a + below.r * b) >> 5),
                    std::min(63u, (out.g * a + below.g * b) >> 5),
                    std::min(63u, (out.b * a + below.b * b) >> 5)};
         } else if ((mask[x] & 0x20) && (bldcnt & (1u << top))) {
             if (effect == 1 && under_ok) {
-                out = mix(out, to_rgb6(under_color), eva, evb);
+                out = mix(out, layer_rgb(under, under_color), eva, evb);
             } else if (effect == 2) {
                 out.r += ((63 - out.r) * evy + 8) >> 4;
                 out.g += ((63 - out.g) * evy + 8) >> 4;
@@ -514,9 +522,10 @@ void render_engine(Engine& e, u32 line, u8* rgba) {
         for (u32 x = 0; x < kScreenWidth; ++x) {
             const u32 pixel = source[(x + scroll) & 0x1FF & 0xFF];
             if ((x + scroll) & 0x100) continue;  // beyond the 256 pixels of the picture
-            const u32 alpha = (pixel >> 16) & 31;
+            const u32 alpha = (pixel >> 18) & 31;
             if (alpha == 0) continue;
-            g_line.bg[0][x] = u16(pixel & 0x7FFF) | kOpaque;
+            g_line.bg[0][x] = kOpaque;
+            g_line.bg0_rgb[x] = pixel & 0x3FFFF;
             g_line.bg0_alpha[x] = u8(alpha);
         }
     } else if (dispcnt & 0x100) {
