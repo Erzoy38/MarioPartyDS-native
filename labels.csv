@@ -27,6 +27,7 @@ ov001:0x02169B74,load_sprite_record,r0 = container slot; r1 = record: tiles; pal
 0x020BD408,overlay_checksums,20 bytes each for 108 overlays; used on download start
 0x020CFCD8,player_pads,0x38 bytes per player for 4 players
 0x020D4700,shared_input_buffer,4 players at 0x26 bytes each; own record at +0x98
+0x020D45A0,net_context,bit 0 of byte +0x298 is set while the multiplayer menu is active
 0x027FFC40,boot_type,2 means started by Download Play
 0x02018584,get_mpd_path,r0 = file index; uses the current language
 0x020187F4,get_message,r0 = (file << 16) | message; returns the text

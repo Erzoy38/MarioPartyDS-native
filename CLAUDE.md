@@ -28,4 +28,6 @@ Format `addr,name,comment`, Adressen wie oben. Der Kommentar ist optional, aber 
 - PNG-Ausgabe läuft über `tools/gfx.py` ohne Zusatzpakete; `pypng` wird nicht gebraucht.
 - ARM9 und Overlays sind komprimiert. Immer mit `unpacked/arm9.bin` und `unpacked/overlay/ovNNN.bin` arbeiten, nie mit den Bytes aus der ROM. Neu erzeugen mit `python tools/decompress.py <rom>`.
 - Emulator: `F:\Tools\melonDS\melonDS.exe`, JIT aus, GDB-Stub an. Der Stub erlaubt **eine Verbindung je melonDS-Start** und muss mit dem Byte `+` beginnen; falsche Bytes blockieren ihn bis zum Neustart. Deshalb immer zuerst einmal `python tools/gdb_server.py` im Hintergrund starten und Werkzeuge nur über `gdb_client.Session` verbinden, nie direkt auf Port 3333.
-- `re_loop.sh` läuft hier so noch nicht: bash und jq fehlen, und der Ordner ist kein Git-Repository.
+- Tasten im laufenden Spiel: `python tools/press_keys.py "A,wait=2"`, Bild des melonDS-Fensters: `tools/grab_window.ps1 <png>`. In Menüs erst markieren, dann mit A bestätigen. Nie Spielstände kopieren oder löschen.
+- Nativer Teil: `native/`, bauen mit `powershell -ExecutionPolicy Bypass -File native\build.ps1`. Plan und Entscheidungen stehen in `MULTIPLAYER_ROADMAP.md`.
+- `re_loop.sh` läuft hier so noch nicht: bash und jq fehlen.

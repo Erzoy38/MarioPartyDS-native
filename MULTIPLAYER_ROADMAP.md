@@ -32,7 +32,7 @@ Kennzeichnung: **[gemessen]** stammt aus Werkzeugen dieses Projekts, **[Hypothes
 
 **Funktionierende Spielmechaniken in nativer Form: keine.** Sie laufen nur im Originalcode.
 
-Fehlgeschlagen: Das Erzwingen eines Szenenwechsels durch Löschen des Task-Flags ließ das Spiel hängen. Tasten-Eingabe über den Emulator: `tools/press_keys.py` setzt bei `0x01FFC3B8` die Tastenmaske in `r9`; noch ungetestet.
+Fehlgeschlagen: Das Erzwingen eines Szenenwechsels durch Löschen des Task-Flags ließ das Spiel hängen. Tasten-Eingabe über den Emulator: `tools/press_keys.py` setzt bei `0x01FFC3B8` die Tastenmaske in `r9`. Die Tasten sind getestet (vom Titel bis ins Multiplayer-Menü), Touch noch nicht. `tools/grab_window.ps1` nimmt nur das melonDS-Fenster auf.
 
 Phase 0, Stand: Git-Repository angelegt (nur lokal, ROM und Spielinhalte ausgeschlossen). `native/` baut mit MSVC 19.50, CMake und Ninja aus den Build Tools eine `MarioPartyDS.exe`, die ein leeres Fenster zeigt und den automatischen Start-Test besteht. Sie enthält **keinen Spielcode**. SDL3 ist noch nicht eingebunden, weil es dafür einen Download braucht.
 
@@ -81,10 +81,23 @@ Den Funkzustand (`0x02027110`) fragen 82 Overlays ab: alle 6 Bretter, Party-, Mi
 
 **Folgerung:** Der Austauschpunkt ist klein und klar. Auf dem PC ersetzt eine Funktion `WH_StepDataSharing`, die die Eingaben vom Server holt. Für jede Instanz liegen alle Spieleingaben dann so vor, wie das Spiel sie erwartet. Weil auf dem PC jeder das volle Spiel hat, entfallen außerdem die Speichergrenzen eines Empfänger-DS.
 
-**Noch nicht belegt:**
-- Dass die Instanzen wirklich dieselbe Logik rechnen. Der Code zeigt den Mechanismus, gesehen haben wir ihn nicht laufen. Zufallswerte müssen dabei gleich starten; das ist nicht untersucht.
-- Der Umfang. „Fragt den Zustand ab“ bedeutet nicht „läuft im Funkmodus“; auch Story-Menü und Galerie fragen ihn ab. Nicht abfragende Minispiele können den Zustand über Hilfsfunktionen im Hauptprogramm erhalten.
-- Ob 2 melonDS-Instanzen das testen können. Der Empfängerstart kommt aus der DS-Firmware, die hier nicht vorliegt.
+### Ergebnis aus Phase 1, im laufenden Spiel gesehen [gemessen, melonDS]
+
+- Das Menü „Multiplayer“ (Modus `0x89`) setzt das Netz-Flag (`0x020D45A0 + 0x298`) und sucht Spieler. Beim Beenden geht das Flag zurück auf 0.
+- Der Puffer ist aktiv: `shared[0]` entspricht dem eigenen Datensatz und ändert sich mit einem Tastendruck. Zustand 1 ist die Suche; der Code behandelt den Austausch ab Zustand 5.
+- Spieltext: Party für bis zu vier Spieler, oder Spezialspiele für zwei.
+- Ohne Gäste startet der Host keine Partie. Der eigentliche Austausch zwischen Geräten wurde deshalb **nicht** beobachtet.
+- Aus dem Code: Der Weg führt nach `0x88`, zur normalen Modusauswahl. `ov089` (Party-Modus) fragt den Funkzustand an 20 Stellen ab.
+
+### Entscheidung
+
+**N1 (Funkschicht ersetzen) ist die Arbeitsgrundlage.** Begründung: Das Eingabe-Lockstep ist im Code belegt, sein Puffer im Betrieb, und der Party-Modus ist offensichtlich darauf ausgelegt. N2 bleibt Rückfall.
+
+**Noch nicht belegt, also Risiken für N1:**
+- Dass die Instanzen wirklich dieselbe Logik rechnen. Zufallswerte müssen dabei gleich starten; das ist nicht untersucht.
+- Der Umfang. „Fragt den Zustand ab“ bedeutet nicht „läuft im Funkmodus“; auch Story-Menü und Galerie fragen ihn ab. Welche Bretter und Minispiele im Netz angeboten werden, ist nicht gesehen. Falls es nur eine Auswahl ist, fehlen die übrigen Spiele online oder brauchen eigene Arbeit.
+- Echter Austausch. Der Empfängerstart braucht die DS-Firmware, die hier nicht vorliegt; eine zweite melonDS-Instanz wurde nicht versucht. Der erste echte Test kommt daher vermutlich erst in Phase 8 oder durch eine eigene Test-Instanz, die den Austausch nachbildet.
+- Der Modus für zwei Spieler und die Bosse. Bosse fragen den Zustand größtenteils nicht ab und sind vermutlich Einzelspieler-Inhalte.
 
 ## 5. Punkte in der Anforderung, die ich klären muss
 
@@ -175,8 +188,8 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 
 | Phase | Inhalt | Prüfbares Ziel |
 |---|---|---|
-| 0 | Git-Repository (ROM und Spielinhalte ausgeschlossen), CMake, SDL3, Tasten-Eingabe im Emulator | Leeres Fenster als Exe; Tasten wirken im Spiel |
-| 1 | **Funkmodus untersuchen:** Umfang, Datenfluss, wer rechnet was; zwei melonDS-Instanzen im lokalen Funkmodus | Liste der Bretter und Minispiele im Funkmodus; Entscheidung N1 oder N2 |
+| 0 | Git-Repository (ROM und Spielinhalte ausgeschlossen), CMake, Tasten-Eingabe im Emulator. **Erreicht** bis auf SDL3, das in Phase 4 mit Download-Rückfrage folgt | Leeres Fenster als Exe; Tasten wirken im Spiel |
+| 1 | **Funkmodus untersuchen:** Datenfluss und Einstieg gelesen, Puffer im Betrieb gesehen, Entscheidung N1 getroffen. **Offen:** Liste der Bretter und Minispiele im Netz, echter Austausch | Teilweise erreicht, siehe Abschnitt 4 |
 | 2 | Rekompilierer und minimale Laufzeit, Vergleich gegen melonDS | Start bis `main`: Register und RAM gleich |
 | 3 | Code-Abdeckung, Interrupts, Task-System, Overlays | Headless bis ins Hauptmenü, RAM-Abgleich über Hunderte Bilder |
 | 4 | 2D-Darstellung, Eingabe, Dateien, Spielstand | Titel und Menüs bedienbar; pixelweiser Vergleich |
