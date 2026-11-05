@@ -26,6 +26,8 @@ constexpr u32 kVramSpan = 0xA00000;
 u8* g_vram_page[kVramSpan >> kPageShift];
 const u8* g_bg_ext[2][4];   // per engine and slot, 8 KiB each
 const u8* g_obj_ext[2];     // per engine, 8 KiB
+const u8* g_tex_slot[4];
+const u8* g_tex_pal[6];
 
 struct Bank { u32 offset, size; };
 constexpr Bank kBanks[9] = {{0x00000, 0x20000}, {0x20000, 0x20000}, {0x40000, 0x20000},
@@ -79,6 +81,8 @@ void vram_remap() {
     std::memset(g_vram_page, 0, sizeof g_vram_page);
     std::memset(g_bg_ext, 0, sizeof g_bg_ext);
     std::memset(g_obj_ext, 0, sizeof g_obj_ext);
+    std::memset(g_tex_slot, 0, sizeof g_tex_slot);
+    std::memset(g_tex_pal, 0, sizeof g_tex_pal);
     constexpr u32 kBgA = 0x000000, kBgB = 0x200000, kObjA = 0x400000, kObjB = 0x600000;
     constexpr u32 kLcdc = 0x800000;
     constexpr u8 kControlOffset[9] = {0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x48, 0x49};
@@ -94,16 +98,19 @@ void vram_remap() {
         } else if (b <= 3) {  // A, B, C, D
             if (mst == 1) map_bank(kBgA + ofs * 0x20000, bank);
             else if (mst == 2 && b <= 1) map_bank(kObjA + (ofs & 1) * 0x20000, bank);
+            else if (mst == 3) g_tex_slot[ofs] = base;
             else if (mst == 4 && b == 2) map_bank(kBgB, bank);
             else if (mst == 4 && b == 3) map_bank(kObjB, bank);
         } else if (b == 4) {  // E
             if (mst == 1) map_bank(kBgA, bank);
             else if (mst == 2) map_bank(kObjA, bank);
+            else if (mst == 3) for (int s = 0; s < 4; ++s) g_tex_pal[s] = base + s * 0x4000;
             else if (mst == 4) for (int s = 0; s < 4; ++s) g_bg_ext[0][s] = base + s * 0x2000;
         } else if (b <= 6) {  // F, G
             const u32 step = (ofs & 1) * 0x4000 + (ofs >> 1) * 0x10000;
             if (mst == 1) map_bank(kBgA + step, bank);
             else if (mst == 2) map_bank(kObjA + step, bank);
+            else if (mst == 3) g_tex_pal[(ofs & 1) + (ofs >> 1) * 4] = base;
             else if (mst == 4) for (int s = 0; s < 2; ++s) g_bg_ext[0][(ofs & 1) * 2 + s] = base + s * 0x2000;
             else if (mst == 5) g_obj_ext[0] = base;
         } else if (b == 7) {  // H
@@ -126,6 +133,8 @@ const u8* vram_page(u32 offset) {
 }
 const u8* vram_bg_ext_palette(int engine, int slot) { return g_bg_ext[engine][slot]; }
 const u8* vram_obj_ext_palette(int engine) { return g_obj_ext[engine]; }
+const u8* vram_texture_slot(u32 slot) { return slot < 4 ? g_tex_slot[slot] : nullptr; }
+const u8* vram_texture_palette_slot(u32 slot) { return slot < 6 ? g_tex_pal[slot] : nullptr; }
 
 u8 rd8(u32 addr) {
     u32 value;

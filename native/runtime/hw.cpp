@@ -1,5 +1,6 @@
 #include "hw.h"
 
+#include "gpu3d.h"
 #include "memory.h"
 #include "ppu.h"
 
@@ -282,7 +283,7 @@ void dma_run(int channel) {
     if (dst_mode != 3) set_io32(base + 4, d);
     const bool repeat = control >> 25 & 1;
     const u32 timing = (control >> 27) & 7;
-    if (!repeat || timing == 0) set_io32(base + 8, control & 0x7FFFFFFFu);
+    if (!repeat || timing == 0 || timing == 7) set_io32(base + 8, control & 0x7FFFFFFFu);
     if (control >> 30 & 1) hw_raise(1u << (8 + channel));
 }
 
@@ -435,6 +436,7 @@ void next_line() {
     u16 stat = io16(0x04);
     const bool vblank_line = g_hw.line >= kFirstVBlankLine && g_hw.line < kLinesPerFrame - 1;
     if (g_hw.line == kFirstVBlankLine) {
+        gpu3d_vblank();
         if (stat & 0x08) hw_raise(irq::kVBlank);
         dma_trigger(1);
     }
@@ -496,6 +498,10 @@ void hw_step(Cpu& c) {
 
 bool hw_read(u32 addr, u32 size, u32& value) {
     (void)size;
+    if (addr >= 0x04000600 && addr < 0x040006A4) {
+        value = gpu3d_read(addr);
+        return true;
+    }
     if (addr >= 0x04000100 && addr < 0x04000110) {
         const int timer = (addr - 0x04000100) / 4;
         if (addr & 2) {
@@ -529,6 +535,14 @@ bool hw_read(u32 addr, u32 size, u32& value) {
 }
 
 bool hw_write(u32 addr, u32 size, u32 value) {
+    if (addr >= 0x04000400 && addr < 0x04000600) {
+        gpu3d_write(addr, size, value);
+        return true;
+    }
+    if (addr == 0x04000600) {
+        gpu3d_write_status(value);
+        return true;
+    }
     if (addr >= 0x04000100 && addr < 0x04000110) {
         const int timer = (addr - 0x04000100) / 4;
         const auto set_control = [&](u32 control) {
@@ -555,7 +569,9 @@ bool hw_write(u32 addr, u32 size, u32 value) {
         if (relative >= 8) {
             const int channel = (offset - 0xB0) / 12;
             const u32 control = io32(0xB0 + channel * 12 + 8);
-            if ((control >> 31) && ((control >> 27) & 7) == 0) dma_run(channel);
+            const u32 timing = (control >> 27) & 7;
+            // Timing 7 feeds the geometry FIFO. Its commands run at once, so it is never full.
+            if ((control >> 31) && (timing == 0 || timing == 7)) dma_run(channel);
         }
         return true;
     }

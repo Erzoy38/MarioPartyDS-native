@@ -1,5 +1,6 @@
 #include "ppu.h"
 
+#include "gpu3d.h"
 #include "memory.h"
 
 #include <algorithm>
@@ -78,6 +79,7 @@ struct Line {
     u8 obj_priority[kScreenWidth];
     u8 obj_alpha[kScreenWidth];   // 0 normal, 0x80 semi-transparent, 0xC0 | alpha for bitmaps
     bool obj_window[kScreenWidth];
+    u8 bg0_alpha[kScreenWidth];   // from the 3D picture: 1 to 31; 0 when background 0 is not 3D
 };
 Line g_line;
 
@@ -441,6 +443,13 @@ void merge_layers(const Engine& e, u32 dispcnt, const u8* mask, u8* rgba) {
             const u32 a = bitmap ? ((alpha & 15u) + 1) : eva;
             const u32 b = bitmap ? 16 - a : evb;
             out = mix(out, to_rgb6(under_color), a, b);
+        } else if (top == 0 && g_line.bg0_alpha[x] != 0 && g_line.bg0_alpha[x] < 31 && under_ok) {
+            // A translucent 3D pixel blends by its own alpha, whatever the blend mode says.
+            const Rgb6 below = to_rgb6(under_color);
+            const u32 a = g_line.bg0_alpha[x] + 1u, b = 32 - a;
+            out = {std::min(63u, (out.r * a + below.r * b) >> 5),
+                   std::min(63u, (out.g * a + below.g * b) >> 5),
+                   std::min(63u, (out.b * a + below.b * b) >> 5)};
         } else if ((mask[x] & 0x20) && (bldcnt & (1u << top))) {
             if (effect == 1 && under_ok) {
                 out = mix(out, to_rgb6(under_color), eva, evb);
@@ -498,8 +507,21 @@ void render_engine(Engine& e, u32 line, u8* rgba) {
     if (dispcnt & 0x1000 || dispcnt & 0x8000) draw_sprites(e, line, dispcnt);
 
     const bool bg0_3d = main_engine && (dispcnt & 8);
-    if (bg0_3d) ++g_gaps.lines_with_3d;
-    if (dispcnt & 0x100 && !bg0_3d) draw_text_bg(e, 0, line, dispcnt, g_line.bg[0]);
+    if (bg0_3d && (dispcnt & 0x100)) {
+        ++g_gaps.lines_with_3d;
+        const u32* source = gpu3d_line(line);
+        const u32 scroll = reg16(e, 0x10) & 0x1FF;
+        for (u32 x = 0; x < kScreenWidth; ++x) {
+            const u32 pixel = source[(x + scroll) & 0x1FF & 0xFF];
+            if ((x + scroll) & 0x100) continue;  // beyond the 256 pixels of the picture
+            const u32 alpha = (pixel >> 16) & 31;
+            if (alpha == 0) continue;
+            g_line.bg[0][x] = u16(pixel & 0x7FFF) | kOpaque;
+            g_line.bg0_alpha[x] = u8(alpha);
+        }
+    } else if (dispcnt & 0x100) {
+        draw_text_bg(e, 0, line, dispcnt, g_line.bg[0]);
+    }
     if (dispcnt & 0x200) draw_text_bg(e, 1, line, dispcnt, g_line.bg[1]);
     if (dispcnt & 0x400) {
         if (mode == 0 || mode == 1 || mode == 3) draw_text_bg(e, 2, line, dispcnt, g_line.bg[2]);

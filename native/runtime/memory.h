@@ -30,3 +30,6 @@ void vram_remap();
 const u8* vram_page(u32 offset);
 const u8* vram_bg_ext_palette(int engine, int slot);
 const u8* vram_obj_ext_palette(int engine);
+// Texture memory: four slots of 128 KiB. Texture palettes: six slots of 16 KiB.
+const u8* vram_texture_slot(u32 slot);
+const u8* vram_texture_palette_slot(u32 slot);

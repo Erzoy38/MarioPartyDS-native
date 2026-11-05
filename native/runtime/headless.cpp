@@ -6,6 +6,7 @@
 //        [--input TICK:WHAT[:FRAMES]]...
 #define _CRT_SECURE_NO_WARNINGS  // sscanf reads the command line here, with field widths
 #include "cpu.h"
+#include "gpu3d.h"
 #include "hw.h"
 #include "machine.h"
 #include "memory.h"
@@ -95,8 +96,11 @@ void print_progress() {
                 static_cast<unsigned long long>(g_scene_changes), s16(rd16(kModeState)),
                 rd8(kModeState + 0xC), rd8(kModeState + 0xD), s16(rd16(kSlotScene)),
                 s16(rd16(kSlotScene + 2)));
-    std::printf("lines without 3D or capture drawn: 3D %llu, capture %llu\n",
+    std::printf("3D lines %llu, lists drawn %llu, last list %u polygons %u vertices, unknown 3D commands %llu\n",
                 static_cast<unsigned long long>(ppu_gaps().lines_with_3d),
+                static_cast<unsigned long long>(gpu3d_stats().lists_drawn), gpu3d_stats().last_polygons,
+                gpu3d_stats().last_vertices, static_cast<unsigned long long>(gpu3d_stats().unknown_commands));
+    std::printf("lines wanting display capture (not drawn): %llu\n",
                 static_cast<unsigned long long>(ppu_gaps().lines_with_capture));
 }
 
