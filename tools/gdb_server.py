@@ -56,14 +56,19 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stub-port", type=int, default=3333)
     ap.add_argument("--port", type=int, default=SERVER_PORT)
+    ap.add_argument("--stay-stopped", action="store_true",
+                    help="leave the game stopped, for melonDS's break on startup")
     args = ap.parse_args()
 
     stub = Gdb(port=args.stub_port, timeout=15.0)
     print("connected to stub:", stub.features.decode(errors="replace"), flush=True)
     print("stub status:", stub.status(), flush=True)
     # Connecting stops the game; let it run until a tool asks otherwise.
-    stub.resume()
-    print("game resumed", flush=True)
+    if args.stay_stopped:
+        print("game left stopped", flush=True)
+    else:
+        stub.resume()
+        print("game resumed", flush=True)
 
     socketserver.TCPServer.allow_reuse_address = True
     server = socketserver.TCPServer(("127.0.0.1", args.port), None)

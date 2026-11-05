@@ -190,7 +190,7 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 |---|---|---|
 | 0 | Git-Repository (ROM und Spielinhalte ausgeschlossen), CMake, Tasten-Eingabe im Emulator. **Erreicht** bis auf SDL3, das in Phase 4 mit Download-Rückfrage folgt | Leeres Fenster als Exe; Tasten wirken im Spiel |
 | 1 | **Funkmodus untersuchen:** Datenfluss und Einstieg gelesen, Puffer im Betrieb gesehen, Entscheidung N1 getroffen. **Offen:** Liste der Bretter und Minispiele im Netz, echter Austausch | Teilweise erreicht, siehe Abschnitt 4 |
-| 2 | Rekompilierer und minimale Laufzeit, Vergleich gegen melonDS | Start bis `main`: Register und RAM gleich |
+| 2 | Rekompilierer und minimale Laufzeit, Vergleich gegen melonDS. **Erreicht** (siehe unten) | Start bis `main`: Register und RAM gleich |
 | 3 | Code-Abdeckung, Interrupts, Task-System, Overlays | Headless bis ins Hauptmenü, RAM-Abgleich über Hunderte Bilder |
 | 4 | 2D-Darstellung, Eingabe, Dateien, Spielstand | Titel und Menüs bedienbar; pixelweiser Vergleich |
 | 5 | 3D | Brett und Figuren wie im Emulator |
@@ -201,6 +201,19 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 | 10 | Lobby, Codes, Charakterwahl, Oberfläche | Ablauf von Raum bis Start in 4 Prozessen |
 | 11 | Abbrüche, Wiedereintritt, Serverneustart, Verzögerung, Ping | Netzsimulator-Tests bestanden |
 | 12 | Internet: Server betreiben, Verschlüsselung, Einstellungen, Vollbild | 4 echte PCs an verschiedenen Standorten spielen eine Party |
+
+### Ergebnis Phase 2 [gemessen, gegen melonDS an `main`]
+
+`tools/recomp.py` übersetzt 53.302 Befehle in 13.120 C++-Blöcke; `MarioPartyDS-headless` startet aus dem komprimierten ROM-Abbild und erreicht `main` in 0,6 s.
+
+| Vergleich | Ergebnis |
+|---|---|
+| r0 bis r15, CPSR | gleich |
+| Hauptspeicher unter `0x02380000` (rund 3,6 MB) | gleich |
+| ITCM, DTCM, Palette, OAM | gleich |
+| Hauptspeicher ab `0x02380000` | abweichend wie erwartet: ARM7-Code (`0x02380000`, `0x023E0000`) und Boot-Daten der Firmware (`0x023FF800` bis `0x023FFDA8`) |
+
+**Grenzen:** Gelaufen ist nur der Start, ein kleiner Teil der Blöcke, und vermutlich kein Thumb-Code. Die Übersetzung aller anderen Befehle ist kompiliert, aber nicht ausgeführt. Es gibt noch keine Interrupts, keine Timer, keine BIOS-Aufrufe und keinen Dateizugriff; ein `swi` bricht das Programm ab. Der Code ist ohne Optimierung gebaut. **Für Phase 3 nötig:** Firmware-Bootdaten (Name, Sprache, Einstellungen) nachbilden.
 
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 

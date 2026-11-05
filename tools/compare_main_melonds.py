@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Stop melonDS at main after a reset and compare it with the native run.
+"""Stop melonDS at main after startup and compare it with the native run.
 
-Sets a breakpoint on main and waits for the user to reset the game in melonDS. Compares
-registers, CPSR and all RAM areas with the dump from MarioPartyDS-headless.
+A reset ends the stub connection, so this needs melonDS's "break on startup" for the ARM9:
+melonDS waits before the first instruction, tools/gdb_server.py --stay-stopped connects, and
+this sets a breakpoint on main and lets the game run to it. Compares registers, CPSR and all
+RAM areas with the dump from MarioPartyDS-headless.
 
-Needs tools/gdb_server.py running. Usage: python tools/compare_main_melonds.py <dump> [wait s]
+Usage: python tools/compare_main_melonds.py <dump> [wait s]
 """
 import os
 import socket
@@ -27,7 +29,7 @@ def main():
         gdb.interrupt()
         print("breakpoint:", gdb.set_break(MAIN), flush=True)
         gdb.resume()
-        print("waiting for a reset in melonDS...", flush=True)
+        print("running to main...", flush=True)
         end = time.time() + wait
         stop = None
         while time.time() < end and stop is None:
