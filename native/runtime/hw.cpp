@@ -1,10 +1,13 @@
+#define _CRT_SECURE_NO_WARNINGS  // getenv, only for a diagnostic switch
 #include "hw.h"
 
 #include "gpu3d.h"
 #include "memory.h"
 #include "ppu.h"
+#include "sound.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -173,27 +176,6 @@ void arm7_touch(u32 data) {
     arm7_reply(6, 0x01000000);
 }
 
-// Sound commands. The game sends a chain of 0x18-byte commands (next at +0, id at +4, arguments
-// from +8) and counts a chain as done when the first word of a shared block moves on (see
-// 0x02066A84 and 0x02066E24). Command 0x1D names that block. A word of 0 only wakes the ARM7.
-// Commands are consumed without making sound: sound output is a later phase.
-void arm7_sound(u32 data) {
-    constexpr u32 kCommandSharedBlock = 0x1D;
-    static u32 shared_block = 0;
-    static bool seen_id[256];
-    if (data == 0) return;
-    for (u32 command = data; command != 0; command = rd32(command)) {
-        const u32 id = rd32(command + 4);
-        if (id == kCommandSharedBlock) shared_block = rd32(command + 8);
-        if (id < 256 && !seen_id[id]) {
-            seen_id[id] = true;
-            std::printf("sound command %#x: consumed, no sound\n", id);
-        }
-    }
-    if (shared_block == 0) runtime_abort("sound command before the shared block is known", data);
-    wr32(shared_block, rd32(shared_block) + 1);
-}
-
 void arm7_receive(u32 word) {
     const u32 tag = word & 31;
     const u32 data = word >> 6;
@@ -214,7 +196,7 @@ void arm7_receive(u32 word) {
         return;
     }
     if (tag == 7) {
-        arm7_sound(data);
+        sound_receive(data);
         return;
     }
     if (++g_tag_counts[tag] <= 12) {
@@ -428,6 +410,7 @@ void card_start(u32 control) {
 
 void next_line() {
     g_hw.line_blocks = 0;
+    sound_line();
     ++g_hw.line;
     if (g_hw.line >= kLinesPerFrame) {
         g_hw.line = 0;

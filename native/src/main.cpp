@@ -12,6 +12,7 @@
 #include "hw.h"
 #include "machine.h"
 #include "ppu.h"
+#include "sound.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -197,7 +198,7 @@ int main(int argc, char** argv) {
         else if (arg.rfind("--", 0) != 0) rom_path = arg;
     }
 
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         std::printf("SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
@@ -246,6 +247,13 @@ int main(int argc, char** argv) {
     settings.save = read_file(save_path);
     machine_boot(rom, settings);
 
+    // Sound: samples are made in step with the game, and the device plays them as they come.
+    const SDL_AudioSpec audio_spec{SDL_AUDIO_S16, 2, int(kSoundRate)};
+    SDL_AudioStream* audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, nullptr, nullptr);
+    if (audio != nullptr) SDL_ResumeAudioStreamDevice(audio);
+    else std::printf("no sound device: %s\n", SDL_GetError());
+    std::vector<s16> samples;
+
     const u64 ticks_per_frame = u64(double(SDL_GetPerformanceFrequency()) / kFramesPerSecond);
     u64 next_frame = SDL_GetPerformanceCounter();
     long long frames = 0;
@@ -291,6 +299,15 @@ int main(int argc, char** argv) {
 
         machine_run_frame();
         ++frames;
+
+        sound_take_samples(samples);
+        if (audio != nullptr && !samples.empty()) {
+            // Over a quarter of a second behind means the game ran ahead: drop rather than lag.
+            const int queued = SDL_GetAudioStreamQueued(audio);
+            if (queued < int(kSoundRate)) {
+                SDL_PutAudioStreamData(audio, samples.data(), int(samples.size() * sizeof(s16)));
+            }
+        }
 
         // Writes shortly after the game stops changing its save, not in the middle of a save.
         if (machine_save_changed()) frames_since_change = 0;

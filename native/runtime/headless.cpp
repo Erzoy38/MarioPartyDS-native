@@ -11,6 +11,7 @@
 #include "machine.h"
 #include "memory.h"
 #include "ppu.h"
+#include "sound.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -51,6 +52,29 @@ void write_all_dumps(const std::string& path) {
     std::ofstream picture(folder / "frame.rgba", std::ios::binary);
     picture.write(reinterpret_cast<const char*>(ppu_frame()),
                   std::streamsize(kScreenWidth) * kScreenHeight * 2 * 4);
+}
+
+// --wav FILE: writes the sound of the whole run, to hear and check it.
+std::string g_wav_path;
+std::vector<s16> g_wav_samples;
+std::vector<s16> g_wav_chunk;
+
+void collect_sound() {
+    sound_take_samples(g_wav_chunk);
+    g_wav_samples.insert(g_wav_samples.end(), g_wav_chunk.begin(), g_wav_chunk.end());
+}
+
+void write_wav() {
+    if (g_wav_path.empty()) return;
+    std::ofstream out(g_wav_path, std::ios::binary);
+    const u32 bytes = u32(g_wav_samples.size() * 2);
+    const auto put32 = [&](u32 v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+    const auto put16 = [&](u16 v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+    out.write("RIFF", 4); put32(36 + bytes); out.write("WAVEfmt ", 8); put32(16);
+    put16(1); put16(2); put32(kSoundRate); put32(kSoundRate * 4); put16(4); put16(16);
+    out.write("data", 4); put32(bytes);
+    out.write(reinterpret_cast<const char*>(g_wav_samples.data()), bytes);
+    std::printf("wrote %s: %.1f seconds\n", g_wav_path.c_str(), double(g_wav_samples.size()) / 2 / kSoundRate);
 }
 
 // --dump-tick N, repeatable: also dumps to <dump>/tickN when game tick N starts.
@@ -203,6 +227,7 @@ int main(int argc, char** argv) {
             unsigned long long from = 0, to = 0;
             if (std::sscanf(argv[i + 1], "%llu:%llu", &from, &to) == 2) g_frame_ranges.push_back({from, to});
         }
+        else if (!std::strcmp(argv[i], "--wav")) g_wav_path = argv[i + 1];
         else if (!std::strcmp(argv[i], "--name")) settings.player_name = argv[i + 1];
         else if (!std::strcmp(argv[i], "--save")) settings.save = read_file(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--input")) add_input(argv[i + 1]);
@@ -224,12 +249,17 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(g_hw.frames), g_hw.line, g_hw.halted);
             print_progress();
             print_watched();
+            std::printf("sound: %llu notes, %u players and %u channels active, %llu commands not built\n",
+                        static_cast<unsigned long long>(sound_stats().notes), sound_stats().active_players,
+                        sound_stats().active_channels, static_cast<unsigned long long>(sound_stats().unknown_commands));
+            write_wav();
             std::printf("pc=%08x cpsr=%08x\n", c.pc, c.cpsr());
             print_hot_blocks();
             return 4;
         }
         ++blocks;
         watch_progress(c);
+        if (!g_wav_path.empty() && (blocks & 0xFFFF) == 0) collect_sound();
         if (c.pc == kGameTick && g_dump_ticks.count(g_game_ticks) != 0) {
             write_all_dumps(dump + "/tick" + std::to_string(g_game_ticks));
             std::printf("dumped at game tick %llu\n", static_cast<unsigned long long>(g_game_ticks));

@@ -3,6 +3,7 @@
 #include "hw.h"
 #include "memory.h"
 #include "overlay.h"
+#include "sound.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -105,6 +106,7 @@ std::string machine_check_rom(const std::vector<u8>& rom) {
 void machine_boot(const std::vector<u8>& rom, const MachineSettings& settings) {
     memory_init();
     g_machine.rom = &rom;
+    sound_init(rom);
     const u32 rom_offset = header_u32(rom, 0x20);
     const u32 entry = header_u32(rom, 0x24);
     const u32 ram_address = header_u32(rom, 0x28);
