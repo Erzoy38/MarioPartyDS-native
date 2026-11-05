@@ -44,7 +44,7 @@ void arm7_rtc(u32 data) {
 
 // The save memory on the card, as the ARM7 card thread serves it (arm7.bin file offset 0x8340).
 // The game fills a shared block and sends a command; the block's first word is the result.
-// Held in memory only for now: nothing is read from or written to a save file.
+// Files are the caller's business: see hw_set_save and hw_save.
 namespace backup {
 constexpr u32 kResultOk = 0, kResultVerifyFailed = 1, kResultBadAlignment = 2, kResultUnsupported = 3;
 constexpr u32 kResult = 0x00, kCardId = 0x08, kRamOrSave = 0x0C, kSaveOrRam = 0x10, kLength = 0x14;
@@ -53,6 +53,7 @@ constexpr u32 kTotalSize = 0x18, kSectorSize = 0x1C, kAllowedCommands = 0x4C;
 u32 g_block = 0;          // address of the shared block
 bool g_wait_block = false;
 std::vector<u8> g_memory;
+bool g_changed = false;
 
 u8& at(u32 address) {
     const u32 total = rd32(g_block + kTotalSize);
@@ -84,6 +85,7 @@ void run(u32 command) {
         case 7:    // write: RAM address a to save address b
         case 8:    // program
             for (u32 i = 0; i < length; ++i) at(b + i) = rd8(a + i);
+            g_changed = true;
             break;
         case 9: {  // verify
             for (u32 i = 0; i < length; ++i) {
@@ -101,11 +103,13 @@ void run(u32 command) {
                 break;
             }
             for (u32 i = 0; i < length; ++i) at(b + i) = 0xFF;
+            g_changed = true;
             break;
         }
         case 12:   // erase the chip
             at(0);
             g_memory.assign(g_memory.size(), 0xFF);
+            g_changed = true;
             break;
         default:
             wr32(g_block + kResult, kResultUnsupported);
@@ -463,6 +467,14 @@ void hw_set_touch(bool touching, u32 x, u32 y) {
 }
 
 void hw_set_save(const std::vector<u8>& contents) { backup::g_memory = contents; }
+
+const std::vector<u8>& hw_save() { return backup::g_memory; }
+
+bool hw_save_changed() {
+    const bool changed = backup::g_changed;
+    backup::g_changed = false;
+    return changed;
+}
 
 void hw_step(Cpu& c) {
     if (++g_hw.line_blocks >= kBlocksPerLine) next_line();

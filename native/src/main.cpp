@@ -1,104 +1,329 @@
-// Phase 0 toolchain check: opens a window with the DS's two screens as empty areas.
-// No game code runs here yet, and nothing in this file reads the ROM.
+// The game in a window: two screens one above the other, keyboard, mouse and gamepad.
 //
-// --smoke-test closes the window by itself after the first paint and exits with 0, or 1 if
-// the window could not be created. The automated check in native/build.ps1 relies on that.
-#include <windows.h>
-#include <shellapi.h>
+// Usage: MarioPartyDS.exe [rom.nds] [--scale N] [--fullscreen] [--frames N] [--save FILE]
+//        [--screenshot FILE.rgba] [--smoke-test]
+//
+// --frames N       closes after N pictures, for tests
+// --screenshot F   writes the last picture to F as raw RGBA, for tests
+// --smoke-test     opens the window and closes it again, without a game
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
 
-#include <cwchar>
+#include "hw.h"
+#include "machine.h"
+#include "ppu.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
 
 namespace {
 
-constexpr int kScreenWidth = 256;
-constexpr int kScreenHeight = 192;
-constexpr int kScale = 2;
-constexpr int kGap = 8;
-constexpr UINT_PTR kSmokeTimer = 1;
+constexpr int kWidth = kScreenWidth;
+constexpr int kHeight = kScreenHeight * 2;
+constexpr double kFramesPerSecond = 59.8261;  // the DS's picture rate
 
-bool g_smoke_test = false;
-bool g_painted = false;
+// DS key bits, in the order the hardware uses.
+enum Key : u32 {
+    kA = 1, kB = 2, kSelect = 4, kStart = 8, kRight = 0x10, kLeft = 0x20, kUp = 0x40, kDown = 0x80,
+    kR = 0x100, kL = 0x200, kX = 0x400, kY = 0x800,
+};
 
-void PaintScreens(HDC dc) {
-    HBRUSH screen = CreateSolidBrush(RGB(32, 32, 40));
-    const RECT top{0, 0, kScreenWidth * kScale, kScreenHeight * kScale};
-    const RECT bottom{0, top.bottom + kGap, top.right, top.bottom + kGap + kScreenHeight * kScale};
-    FillRect(dc, &top, screen);
-    FillRect(dc, &bottom, screen);
-    DeleteObject(screen);
+u32 keyboard_keys() {
+    const bool* state = SDL_GetKeyboardState(nullptr);
+    struct Binding { SDL_Scancode scancode; u32 key; };
+    static constexpr Binding kBindings[] = {
+        {SDL_SCANCODE_X, kA},        {SDL_SCANCODE_Z, kB},      {SDL_SCANCODE_S, kX},
+        {SDL_SCANCODE_A, kY},        {SDL_SCANCODE_Q, kL},      {SDL_SCANCODE_W, kR},
+        {SDL_SCANCODE_RETURN, kStart}, {SDL_SCANCODE_RSHIFT, kSelect},
+        {SDL_SCANCODE_RIGHT, kRight}, {SDL_SCANCODE_LEFT, kLeft},
+        {SDL_SCANCODE_UP, kUp},      {SDL_SCANCODE_DOWN, kDown},
+    };
+    u32 keys = 0;
+    for (const Binding& binding : kBindings) {
+        if (state[binding.scancode]) keys |= binding.key;
+    }
+    return keys;
 }
 
-LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-    switch (message) {
-        case WM_PAINT: {
-            PAINTSTRUCT paint{};
-            HDC dc = BeginPaint(window, &paint);
-            PaintScreens(dc);
-            EndPaint(window, &paint);
-            g_painted = true;
-            if (g_smoke_test) {
-                SetTimer(window, kSmokeTimer, 200, nullptr);
-            }
-            return 0;
+// The gamepad works the DS keys, and its right stick moves a pointer for the touch screen.
+struct Pad {
+    SDL_Gamepad* handle = nullptr;
+    float pointer_x = kScreenWidth / 2.0f;
+    float pointer_y = kScreenHeight / 2.0f;
+    bool pointer_shown = false;
+    bool touching = false;
+};
+Pad g_pad;
+
+constexpr int kStickDeadZone = 12000;
+
+u32 pad_keys() {
+    if (g_pad.handle == nullptr) return 0;
+    struct Binding { SDL_GamepadButton button; u32 key; };
+    // Named by position, as on a Nintendo pad: right is A, bottom is B.
+    static constexpr Binding kBindings[] = {
+        {SDL_GAMEPAD_BUTTON_EAST, kA},           {SDL_GAMEPAD_BUTTON_SOUTH, kB},
+        {SDL_GAMEPAD_BUTTON_NORTH, kX},          {SDL_GAMEPAD_BUTTON_WEST, kY},
+        {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, kL},  {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, kR},
+        {SDL_GAMEPAD_BUTTON_START, kStart},      {SDL_GAMEPAD_BUTTON_BACK, kSelect},
+        {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, kRight}, {SDL_GAMEPAD_BUTTON_DPAD_LEFT, kLeft},
+        {SDL_GAMEPAD_BUTTON_DPAD_UP, kUp},       {SDL_GAMEPAD_BUTTON_DPAD_DOWN, kDown},
+    };
+    u32 keys = 0;
+    for (const Binding& binding : kBindings) {
+        if (SDL_GetGamepadButton(g_pad.handle, binding.button)) keys |= binding.key;
+    }
+    const int lx = SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_LEFTX);
+    const int ly = SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_LEFTY);
+    if (lx > kStickDeadZone) keys |= kRight;
+    if (lx < -kStickDeadZone) keys |= kLeft;
+    if (ly > kStickDeadZone) keys |= kDown;
+    if (ly < -kStickDeadZone) keys |= kUp;
+    return keys;
+}
+
+void update_pad_pointer() {
+    g_pad.touching = false;
+    if (g_pad.handle == nullptr) return;
+    const int rx = SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_RIGHTX);
+    const int ry = SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_RIGHTY);
+    constexpr float kPixelsPerFrame = 3.0f / 32767.0f;
+    if (std::abs(rx) > kStickDeadZone) { g_pad.pointer_x += rx * kPixelsPerFrame; g_pad.pointer_shown = true; }
+    if (std::abs(ry) > kStickDeadZone) { g_pad.pointer_y += ry * kPixelsPerFrame; g_pad.pointer_shown = true; }
+    g_pad.pointer_x = std::clamp(g_pad.pointer_x, 0.0f, kScreenWidth - 1.0f);
+    g_pad.pointer_y = std::clamp(g_pad.pointer_y, 0.0f, kScreenHeight - 1.0f);
+    g_pad.touching = SDL_GetGamepadButton(g_pad.handle, SDL_GAMEPAD_BUTTON_RIGHT_STICK)
+                     || SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000;
+    if (g_pad.touching) g_pad.pointer_shown = true;
+}
+
+std::vector<u8> read_file(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return {};
+    return std::vector<u8>(std::istreambuf_iterator<char>(file), {});
+}
+
+// Writes next to the target first, so a crash never leaves half a save behind.
+bool write_save(const std::filesystem::path& path, const std::vector<u8>& data) {
+    std::filesystem::path temporary = path;
+    temporary += ".new";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out.write(reinterpret_cast<const char*>(data.data()), std::streamsize(data.size()));
+        if (!out) return false;
+    }
+    std::error_code error;
+    std::filesystem::rename(temporary, path, error);
+    return !error;
+}
+
+void show_error(const std::string& text) {
+    std::printf("error: %s\n", text.c_str());
+    std::fflush(stdout);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Mario Party DS", text.c_str(), nullptr);
+}
+
+void on_abort(const char* reason, u32 address) {
+    char text[200];
+    SDL_snprintf(text, sizeof text,
+                 "The game stopped: %s at %08x.\nDetails are in MarioPartyDS.log.", reason, address);
+    show_error(text);
+}
+
+std::string g_dialog_path;
+bool g_dialog_done = false;
+
+void SDLCALL on_rom_chosen(void*, const char* const* files, int) {
+    if (files != nullptr && files[0] != nullptr) g_dialog_path = files[0];
+    g_dialog_done = true;
+}
+
+std::string ask_for_rom(SDL_Window* window) {
+    static const SDL_DialogFileFilter kFilter[] = {{"Nintendo DS ROM", "nds"}};
+    SDL_ShowOpenFileDialog(on_rom_chosen, nullptr, window, kFilter, 1, nullptr, false);
+    while (!g_dialog_done) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) return {};
         }
-        case WM_TIMER:
-            if (wparam == kSmokeTimer) {
-                DestroyWindow(window);
-            }
-            return 0;
-        case WM_DESTROY:
-            PostQuitMessage(0);
-            return 0;
-        default:
-            return DefWindowProcW(window, message, wparam, lparam);
+        SDL_Delay(20);
     }
+    return g_dialog_path;
 }
 
-bool HasArgument(const wchar_t* wanted) {
-    int count = 0;
-    LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
-    bool found = false;
-    for (int i = 1; args != nullptr && i < count; ++i) {
-        found = found || std::wcscmp(args[i], wanted) == 0;
+std::filesystem::path log_path() {
+    char* base = SDL_GetPrefPath("MarioPartyDS", "MarioPartyDS");
+    std::filesystem::path path = base ? std::filesystem::path(base) : std::filesystem::path(".");
+    SDL_free(base);
+    return path;
+}
+
+void draw_pointer(u8* picture) {
+    if (!g_pad.pointer_shown) return;
+    const int cx = int(g_pad.pointer_x), cy = int(g_pad.pointer_y) + kScreenHeight;
+    for (int i = -3; i <= 3; ++i) {
+        for (const auto& [x, y] : {std::pair{cx + i, cy}, std::pair{cx, cy + i}}) {
+            if (x < 0 || y < kScreenHeight || x >= kWidth || y >= kHeight) continue;
+            u8* pixel = picture + size_t(y) * kWidth * 4 + size_t(x) * 4;
+            pixel[0] = g_pad.touching ? 255 : 0;
+            pixel[1] = 0;
+            pixel[2] = g_pad.touching ? 0 : 255;
+        }
     }
-    LocalFree(args);
-    return found;
 }
 
 }  // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
-    g_smoke_test = HasArgument(L"--smoke-test");
+int main(int argc, char** argv) {
+    std::string rom_path, save_arg, screenshot;
+    int scale = 2;
+    bool fullscreen = false, smoke_test = false;
+    long long frame_limit = -1;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--smoke-test") smoke_test = true;
+        else if (arg == "--fullscreen") fullscreen = true;
+        else if (arg == "--scale" && i + 1 < argc) scale = std::clamp(std::atoi(argv[++i]), 1, 8);
+        else if (arg == "--frames" && i + 1 < argc) frame_limit = std::atoll(argv[++i]);
+        else if (arg == "--save" && i + 1 < argc) save_arg = argv[++i];
+        else if (arg == "--screenshot" && i + 1 < argc) screenshot = argv[++i];
+        else if (arg.rfind("--", 0) != 0) rom_path = arg;
+    }
 
-    WNDCLASSEXW window_class{};
-    window_class.cbSize = sizeof(window_class);
-    window_class.lpfnWndProc = WindowProc;
-    window_class.hInstance = instance;
-    window_class.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));  // IDC_ARROW
-    window_class.hbrBackground = CreateSolidBrush(RGB(0, 0, 0));
-    window_class.lpszClassName = L"MarioPartyDS";
-    if (RegisterClassExW(&window_class) == 0) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+        std::printf("SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
-
-    RECT frame{0, 0, kScreenWidth * kScale, kScreenHeight * kScale * 2 + kGap};
-    const DWORD style = WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX;
-    AdjustWindowRect(&frame, style, FALSE);
-
-    HWND window = CreateWindowExW(0, window_class.lpszClassName,
-                                  L"Mario Party DS (native, noch ohne Spiel)", style, CW_USEDEFAULT,
-                                  CW_USEDEFAULT, frame.right - frame.left, frame.bottom - frame.top,
-                                  nullptr, nullptr, instance, nullptr);
-    if (window == nullptr) {
+    SDL_Window* window = nullptr;
+    SDL_Renderer* renderer = nullptr;
+    if (!SDL_CreateWindowAndRenderer("Mario Party DS", kWidth * scale, kHeight * scale,
+                                     SDL_WINDOW_RESIZABLE, &window, &renderer)) {
+        std::printf("window failed: %s\n", SDL_GetError());
         return 1;
     }
-    ShowWindow(window, g_smoke_test ? SW_SHOWNOACTIVATE : show);
-    UpdateWindow(window);
+    SDL_SetRenderLogicalPresentation(renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
+                                             SDL_TEXTUREACCESS_STREAMING, kWidth, kHeight);
+    SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST);
+    if (fullscreen) SDL_SetWindowFullscreen(window, true);
 
-    MSG message{};
-    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
+    if (smoke_test) {
+        SDL_RenderClear(renderer);
+        SDL_RenderPresent(renderer);
+        SDL_Quit();
+        return 0;
     }
-    return g_smoke_test && !g_painted ? 1 : 0;
+
+    const std::filesystem::path data_folder = log_path();
+    FILE* log = std::freopen((data_folder / "MarioPartyDS.log").string().c_str(), "w", stdout);
+    (void)log;
+    machine_set_abort_hook(on_abort);
+
+    if (rom_path.empty()) rom_path = ask_for_rom(window);
+    if (rom_path.empty()) {
+        SDL_Quit();
+        return 0;
+    }
+    const std::vector<u8> rom = read_file(std::filesystem::u8path(rom_path));
+    std::string problem = rom.empty() ? "The ROM could not be read." : machine_check_rom(rom);
+    if (!problem.empty()) {
+        show_error(problem);
+        SDL_Quit();
+        return 2;
+    }
+
+    // The game's own save stays with this program; a save from an emulator is never touched.
+    const std::filesystem::path save_path =
+        save_arg.empty() ? data_folder / "MarioPartyDS.sav" : std::filesystem::u8path(save_arg);
+    MachineSettings settings;
+    settings.save = read_file(save_path);
+    machine_boot(rom, settings);
+
+    const u64 ticks_per_frame = u64(double(SDL_GetPerformanceFrequency()) / kFramesPerSecond);
+    u64 next_frame = SDL_GetPerformanceCounter();
+    long long frames = 0;
+    int frames_since_change = -1;
+    bool running = true;
+    std::vector<u8> picture(size_t(kWidth) * kHeight * 4);
+
+    while (running && frame_limit != frames) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) running = false;
+            if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
+                if (event.key.scancode == SDL_SCANCODE_F11) {
+                    fullscreen = !fullscreen;
+                    SDL_SetWindowFullscreen(window, fullscreen);
+                } else if (event.key.scancode == SDL_SCANCODE_F10 && !fullscreen) {
+                    scale = scale % 4 + 1;
+                    SDL_SetWindowSize(window, kWidth * scale, kHeight * scale);
+                }
+            }
+            if (event.type == SDL_EVENT_GAMEPAD_ADDED && g_pad.handle == nullptr) {
+                g_pad.handle = SDL_OpenGamepad(event.gdevice.which);
+            }
+            if (event.type == SDL_EVENT_GAMEPAD_REMOVED && g_pad.handle != nullptr
+                && SDL_GetGamepadID(g_pad.handle) == event.gdevice.which) {
+                SDL_CloseGamepad(g_pad.handle);
+                g_pad.handle = nullptr;
+                g_pad.pointer_shown = false;
+            }
+        }
+        update_pad_pointer();
+
+        float mouse_x = 0, mouse_y = 0;
+        const SDL_MouseButtonFlags buttons = SDL_GetMouseState(&mouse_x, &mouse_y);
+        float logical_x = 0, logical_y = 0;
+        SDL_RenderCoordinatesFromWindow(renderer, mouse_x, mouse_y, &logical_x, &logical_y);
+        const bool mouse_touch = (buttons & SDL_BUTTON_LMASK) && logical_x >= 0 && logical_x < kWidth
+                                 && logical_y >= kScreenHeight && logical_y < kHeight;
+        hw_set_keys(keyboard_keys() | pad_keys());
+        if (mouse_touch) hw_set_touch(true, u32(logical_x), u32(logical_y) - kScreenHeight);
+        else if (g_pad.touching) hw_set_touch(true, u32(g_pad.pointer_x), u32(g_pad.pointer_y));
+        else hw_set_touch(false, 0, 0);
+
+        machine_run_frame();
+        ++frames;
+
+        // Writes shortly after the game stops changing its save, not in the middle of a save.
+        if (machine_save_changed()) frames_since_change = 0;
+        else if (frames_since_change >= 0 && ++frames_since_change >= 60) {
+            if (!write_save(save_path, machine_save())) show_error("The save could not be written.");
+            frames_since_change = -1;
+        }
+
+        std::memcpy(picture.data(), ppu_frame(), picture.size());
+        draw_pointer(picture.data());
+        SDL_UpdateTexture(texture, nullptr, picture.data(), kWidth * 4);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+        SDL_RenderTexture(renderer, texture, nullptr, nullptr);
+        SDL_RenderPresent(renderer);
+
+        next_frame += ticks_per_frame;
+        const u64 now = SDL_GetPerformanceCounter();
+        if (now < next_frame) {
+            SDL_DelayPrecise((next_frame - now) * 1000000000ull / SDL_GetPerformanceFrequency());
+        } else if (now - next_frame > ticks_per_frame * 4) {
+            next_frame = now;  // too far behind to catch up
+        }
+    }
+
+    if (frames_since_change >= 0 && !write_save(save_path, machine_save())) {
+        show_error("The save could not be written.");
+    }
+    if (!screenshot.empty()) {
+        std::ofstream out(screenshot, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(ppu_frame()), std::streamsize(picture.size()));
+    }
+    std::printf("frames %lld, ended normally\n", frames);
+    SDL_Quit();
+    return 0;
 }

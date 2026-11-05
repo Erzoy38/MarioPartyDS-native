@@ -35,3 +35,4 @@ native/generated/
 run/
 __pycache__/
 *.pyc
+native/third_party/

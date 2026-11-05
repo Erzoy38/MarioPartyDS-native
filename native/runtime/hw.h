@@ -40,8 +40,10 @@ void hw_raise(u32 flags);
 // X, Y from bit 0, set while pressed. Touch positions are screen pixels.
 void hw_set_keys(u32 pressed);
 void hw_set_touch(bool touching, u32 x, u32 y);
-// Contents of the save memory at start. A copy: nothing is ever written back to a file.
+// Save memory: set at start, read to write it to a file. The flag clears when read.
 void hw_set_save(const std::vector<u8>& contents);
+const std::vector<u8>& hw_save();
+bool hw_save_changed();
 inline constexpr bool kHwDeterministic = true;
 
 // Pseudo code standing in for the ARM9 BIOS at 0xFFFF0000.
