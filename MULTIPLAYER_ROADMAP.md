@@ -193,7 +193,7 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 | 2 | Rekompilierer und minimale Laufzeit, Vergleich gegen melonDS. **Erreicht** (siehe unten) | Start bis `main`: Register und RAM gleich |
 | 3 | Code-Abdeckung, Interrupts, Task-System, Overlays. **Erreicht mit Einschränkungen** (siehe unten) | Headless bis ins Hauptmenü, RAM-Abgleich über Hunderte Bilder |
 | 4 | 2D-Darstellung, Eingabe, Dateien, Spielstand. **Erreicht mit Einschränkungen** (siehe unten) | Titel und Menüs bedienbar; pixelweiser Vergleich |
-| 5 | 3D | Brett und Figuren wie im Emulator |
+| 5 | 3D. **Erreicht mit Einschränkungen** (siehe unten) | Brett und Figuren wie im Emulator |
 | 6 | Sound | Musik und Effekte im Vergleich hörbar |
 | 7 | Lokale Vollständigkeit | Eine Party lokal von Anfang bis Ende; Minispiel-Matrix lokal |
 | 8 | Netz im eigenen Rechner: Lockstep, Server headless | 4 Prozesse lokal, Prüfsummen gleich über eine ganze Partie |
@@ -266,6 +266,31 @@ Der ARM7-Ersatz bedient die PXI-Kanäle 5 (Uhr), 6 (Touch), 7 (Sound), 8 (Strom 
 - Tastenbelegung fest eingebaut, die Einstellungen fehlen noch.
 - Tempo knapp: 600 Bilder in rund 11 s samt Start, Soll rund 10 s. Der Spielcode ist ohne Optimierung gebaut.
 - Offen: In melonDS erschien nach längerem Warten im Hauptmenü ein Bildschirm „Touch the Screen“ mit Sternenhimmel, und gleichzeitig brach die Stub-Verbindung ab. Ob beides zusammenhängt, ist nicht untersucht.
+
+### Ergebnis Phase 5 [gemessen, gegen ein Fensterbild aus melonDS]
+
+`native/runtime/gpu3d.cpp` enthält Geometrie (Matrizen, Licht, Polygone, Clipping, Tests) als exakte Ganzzahl-Arbeit und einen Rasterizer mit Texturen, Tiefenpuffer, Transparenz, Schatten, Kanten und Nebel. Der Rasterizer rechnet mit Gleitkomma; sein Bild fließt nicht ins Spiel zurück, darf also keine Partie auseinanderlaufen lassen. Display-Capture ist in `ppu.cpp` ergänzt.
+
+**Erreicht:** Mit Tasten-Skript und der gespeicherten Partie läuft nativ eine ganze Runde auf Wiggler's Garden samt Minispiel (Szene 44) und zurück aufs Brett, von Runde 2 auf Runde 3. Am Brett „Go, Mario!“ zeigen beide Programme dieselbe Szene.
+
+| Vergleich Brett, je alle Pixel des jeweiligen Bildschirms | Ergebnis |
+|---|---|
+| Oberer Bildschirm (2D) | 148 von 49.152 Pixeln abweichend, Stelle: Figuren auf der Karte (Animation) |
+| Unterer Bildschirm (3D), exakt gleich | 40,0 % |
+| Unterer Bildschirm, höchstens 16 von 255 Abweichung | 91,7 % |
+| Unterer Bildschirm, höchstens 64 von 255 Abweichung | 97,0 % |
+
+**Das 3D-Bild ist also ähnlich, aber nicht pixelgleich.** Gezählt wurde nur ein Bild. Die Hardware interpoliert anders als mein Rasterizer, Antialiasing fehlt ganz.
+
+**Tempo:** Brett im Testlauf ohne Fenster rund 80 Bilder pro Sekunde, Soll 60 (110 Mio. Blöcke in 26 s). Im Fenster auf dem Brett nicht gemessen.
+
+**Grenzen:**
+- Mit melonDS verglichen ist nur dieses eine Bild. Das Minispiel und die Runde sind nur am eigenen Bild angesehen.
+- Nur ein Brett und ein Minispiel gelaufen; von 73 Minispielen ist eines gesehen. Neue Stellen können noch an fehlendem Code stoppen.
+- Rein zufällige A-Tasten im Skript: Das Minispiel wurde durchlaufen, nicht sinnvoll gespielt. Toad scheint im Bild die eigene Figur zu sein, das ist nicht weiter geprüft.
+- Display-Capture lief 1.152 Zeilen lang, die Wirkung ist nicht gegen melonDS geprüft. Der Hauptspeicher-FIFO als Capture-Quelle fehlt.
+- Fehlt: Antialiasing, 1-Punkt-Polygone, Rear-Plane-Bitmap, Drahtgitter bei Alpha 0.
+- Die Polygon-Zählung im Spiel konnte nicht verglichen werden: melonDS meldete den Wert mitten im Aufbau einer Liste.
 
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 

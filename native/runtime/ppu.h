@@ -1,5 +1,5 @@
 // The two 2D engines: draws one scanline at a time from the registers, VRAM, palette and OAM.
-// 3D comes later: where the game shows 3D in background 0, this layer stays see-through.
+// Background 0 can show the 3D picture from gpu3d.
 #pragma once
 
 #include "cpu.h"
@@ -13,7 +13,7 @@ void ppu_finish_frame();  // the finished picture becomes the one to show
 // RGBA, top screen followed by the bottom screen: 256 x 384 pixels.
 const u8* ppu_frame();
 
-// How often a line asked for a feature that is not drawn yet. For honest reporting in tests.
+// How many lines used 3D and display capture, so a test can tell what it actually exercised.
 struct PpuGaps {
     u64 lines_with_3d = 0;
     u64 lines_with_capture = 0;

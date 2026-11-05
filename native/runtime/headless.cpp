@@ -100,7 +100,7 @@ void print_progress() {
                 static_cast<unsigned long long>(ppu_gaps().lines_with_3d),
                 static_cast<unsigned long long>(gpu3d_stats().lists_drawn), gpu3d_stats().last_polygons,
                 gpu3d_stats().last_vertices, static_cast<unsigned long long>(gpu3d_stats().unknown_commands));
-    std::printf("lines wanting display capture (not drawn): %llu\n",
+    std::printf("lines captured: %llu\n",
                 static_cast<unsigned long long>(ppu_gaps().lines_with_capture));
 }
 

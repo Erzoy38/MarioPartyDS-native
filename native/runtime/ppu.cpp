@@ -471,6 +471,8 @@ void merge_layers(const Engine& e, u32 dispcnt, const u8* mask, u8* rgba) {
                 out.b -= (out.b * evy + 7) >> 4;
             }
         }
+        // The display capture takes the picture before the master brightness.
+        const_cast<Engine&>(e).line_out[x] = u16((out.r >> 1) | ((out.g >> 1) << 5) | ((out.b >> 1) << 10) | 0x8000);
         if (master_mode == 1) {
             out.r += ((63 - out.r) * master_factor) >> 4;
             out.g += ((63 - out.g) * master_factor) >> 4;
@@ -556,6 +558,61 @@ void render_engine(Engine& e, u32 line, u8* rgba) {
     }
 }
 
+// Display capture: engine A's line, the 3D picture or a VRAM bank goes into a VRAM bank. The game
+// starts one by setting bit 31; it runs from the next frame's first line and then clears the bit.
+bool g_capture_running = false;
+
+void capture_line(u32 line, u32 control) {
+    static constexpr u32 kWidths[4] = {128, 256, 256, 256};
+    static constexpr u32 kHeights[4] = {128, 64, 128, 192};
+    const u32 size = (control >> 20) & 3;
+    if (line >= kHeights[size]) return;
+    const Engine& e = g_engines[0];
+    const u32 eva = std::min(16u, control & 31), evb = std::min(16u, (control >> 8) & 31);
+    const u32 source = (control >> 29) & 3;
+    const bool from_3d = control & (1u << 24);
+    const bool b_from_fifo = control & (1u << 25);
+    const u32 bank_write = (control >> 16) & 3, offset_write = (control >> 18) & 3;
+    const u32 offset_read = (control >> 26) & 3;
+    const u32 dispcnt = reg32(e, 0);
+    const u32 bank_read = (dispcnt >> 18) & 3;
+    const u32* source_3d = gpu3d_line(line);
+    for (u32 x = 0; x < kWidths[size]; ++x) {
+        u16 a;
+        if (from_3d) {
+            const u32 p = source_3d[x];
+            const u32 alpha = (p >> 18) & 31;
+            a = u16(((p & 63) >> 1) | ((((p >> 6) & 63) >> 1) << 5) | ((((p >> 12) & 63) >> 1) << 10)
+                    | (alpha ? 0x8000 : 0));
+        } else {
+            a = e.line_out[x];
+        }
+        // The main memory display FIFO is not built; the game's capture code has not needed it.
+        u16 b = 0;
+        if (!b_from_fifo) {
+            const u32 at = bank_read * 0x20000 + ((offset_read * 0x8000 + (line * 256 + x) * 2) & 0x1FFFF);
+            std::memcpy(&b, &g_machine.vram[at], 2);
+        }
+        u16 out;
+        if (source == 0) {
+            out = a;
+        } else if (source == 1) {
+            out = b;
+        } else {
+            const u32 aa = (a >> 15) & 1, ab = (b >> 15) & 1;
+            u32 mixed = 0;
+            for (int s = 0; s < 15; s += 5) {
+                const u32 ca = (a >> s) & 31, cb = (b >> s) & 31;
+                mixed |= std::min(31u, (ca * aa * eva + cb * ab * evb + 8) >> 4) << s;
+            }
+            out = u16(mixed | (((aa && eva) || (ab && evb)) ? 0x8000u : 0u));
+        }
+        const u32 at = bank_write * 0x20000 + ((offset_write * 0x8000 + (line * 256 + x) * 2) & 0x1FFFF);
+        std::memcpy(&g_machine.vram[at], &out, 2);
+    }
+    ++g_gaps.lines_with_capture;
+}
+
 }  // namespace
 
 void ppu_render_line(u32 line) {
@@ -567,12 +624,19 @@ void ppu_render_line(u32 line) {
     u8* bottom = top + size_t(kScreenHeight) * kScreenWidth * 4;
     u32 capture;
     std::memcpy(&capture, &g_machine.io[0x64], 4);
-    if (capture & 0x80000000u) ++g_gaps.lines_with_capture;
+    if (line == 0) g_capture_running = capture & 0x80000000u;
     render_engine(g_engines[0], line, a_on_top ? top : bottom);
     render_engine(g_engines[1], line, a_on_top ? bottom : top);
+    if (g_capture_running) capture_line(line, capture);
 }
 
-void ppu_finish_frame() { std::memcpy(g_front, g_back, sizeof g_front); }
+void ppu_finish_frame() {
+    std::memcpy(g_front, g_back, sizeof g_front);
+    if (g_capture_running) {
+        g_capture_running = false;
+        g_machine.io[0x67] &= 0x7F;  // finished: the enable bit clears itself
+    }
+}
 
 const u8* ppu_frame() { return g_front; }
 
