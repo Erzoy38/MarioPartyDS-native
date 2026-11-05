@@ -191,7 +191,7 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 | 0 | Git-Repository (ROM und Spielinhalte ausgeschlossen), CMake, Tasten-Eingabe im Emulator. **Erreicht** bis auf SDL3, das in Phase 4 mit Download-Rückfrage folgt | Leeres Fenster als Exe; Tasten wirken im Spiel |
 | 1 | **Funkmodus untersuchen:** Datenfluss und Einstieg gelesen, Puffer im Betrieb gesehen, Entscheidung N1 getroffen. **Offen:** Liste der Bretter und Minispiele im Netz, echter Austausch | Teilweise erreicht, siehe Abschnitt 4 |
 | 2 | Rekompilierer und minimale Laufzeit, Vergleich gegen melonDS. **Erreicht** (siehe unten) | Start bis `main`: Register und RAM gleich |
-| 3 | Code-Abdeckung, Interrupts, Task-System, Overlays | Headless bis ins Hauptmenü, RAM-Abgleich über Hunderte Bilder |
+| 3 | Code-Abdeckung, Interrupts, Task-System, Overlays. **Erreicht mit Einschränkungen** (siehe unten) | Headless bis ins Hauptmenü, RAM-Abgleich über Hunderte Bilder |
 | 4 | 2D-Darstellung, Eingabe, Dateien, Spielstand | Titel und Menüs bedienbar; pixelweiser Vergleich |
 | 5 | 3D | Brett und Figuren wie im Emulator |
 | 6 | Sound | Musik und Effekte im Vergleich hörbar |
@@ -214,6 +214,34 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 | Hauptspeicher ab `0x02380000` | abweichend wie erwartet: ARM7-Code (`0x02380000`, `0x023E0000`) und Boot-Daten der Firmware (`0x023FF800` bis `0x023FFDA8`) |
 
 **Grenzen:** Gelaufen ist nur der Start, ein kleiner Teil der Blöcke, und vermutlich kein Thumb-Code. Die Übersetzung aller anderen Befehle ist kompiliert, aber nicht ausgeführt. Es gibt noch keine Interrupts, keine Timer, keine BIOS-Aufrufe und keinen Dateizugriff; ein `swi` bricht das Programm ab. Der Code ist ohne Optimierung gebaut. **Für Phase 3 nötig:** Firmware-Bootdaten (Name, Sprache, Einstellungen) nachbilden.
+
+### Ergebnis Phase 3 [gemessen, gegen melonDS ohne Eingabe bis Tick 2610]
+
+`tools/recomp.py` übersetzt nun auch alle 108 Overlays (rund 210.000 Blöcke, Hauptprogramm rund 33.500). Zur Laufzeit folgt `native/runtime/overlay.cpp` den Aufrufen von `load_overlay` und `unload_overlay` und prüft vor jedem Overlay-Block den ersten Befehl gegen den RAM. Geladen wurden im Lauf bisher nur die Overlays 83, 84, 85, 86 und 105.
+
+Der ARM7-Ersatz bedient die PXI-Kanäle 5 (Uhr), 6 (Touch), 7 (Sound), 8 (Strom und Soundchip) und 11 (Spielstand). Kanal 11 folgt dem echten ARM7-Code (`arm7.bin` ab Dateioffset 0x8340), die übrigen dem ARM9-Code und Messwerten aus melonDS.
+
+**Erreicht:** Mit Tasten-Skript und Spielstand läuft das Spiel über Titel (Szene 88) und Spielstand-Auswahl (Szene 90) bis ins Hauptmenü (Szene 91). Belegt über die Szenennummern; ein Bild gibt es nativ noch nicht. Welche Szene was zeigt, ist in melonDS am Bild geprüft.
+
+| Vergleich an den Ticks 60, 120, 300, 1000, 2400, 2600 | Ergebnis |
+|---|---|
+| ITCM, Palette | überall 100 % |
+| Hauptspeicher unter `0x02380000` | 99,982 bis 99,994 %, bei Tick 2600 99,543 % |
+| DTCM | 99,493 bis 99,915 % |
+| OAM | 81,25 bis 100 %, bei Ticks 60, 120 und 2600 gleich |
+| Szenenfolge | gleiche Reihenfolge, andere Zeitpunkte: Szene 88 bei Tick 135 (nativ 131), Szene 110 bei Tick 2484 (nativ 2412) |
+| Zwei native Läufe mit gleichem Spielstand, ohne Eingabe | bei Tick 2000 in allen fünf Bereichen byteweise gleich |
+
+**Deutung der Reste, nicht einzeln belegt:** Die Zeitverschiebung trifft Animationen, OAM und Heap-Inhalte. Der Sound-Bereich ab `0x02159880` bleibt nativ leer, weil dort der echte ARM7 Zustände einträgt. Der Bereich `0x02162D64` bis `0x02162E20` wird von Code um `0x02079870` benutzt; was dort steht, ist unbekannt. **Die Abnahme ist damit ein enger Abgleich, keine Bytegleichheit.**
+
+**Grenzen:**
+- Die Taktung ist ein Platzhalter (`kBlocksPerLine`), die Ursache der Zeitverschiebung ist nicht untersucht.
+- Kein Bild, kein Ton. Eingaben nur per Skript (`--input`).
+- Der Spielstand liegt nur im Arbeitsspeicher. `--save` liest ihn nur, geschrieben wird nie in eine Datei. Lesen, Schreiben und Löschen sind nicht einzeln getestet.
+- Sound-Befehle werden nur abgenommen. Sound-Zustände fehlen, das kann Spielabläufe verändern, die auf das Ende eines Klangs warten.
+- Noch nicht aufgerufener Code kann weiter an fehlenden Einsprüngen stoppen; `tools/recomp_loop.ps1` fängt das ab. Thumb-Sprungtabellen werden nicht verfolgt.
+- Das Hauptmenü wurde nur im nativen Lauf per Szenennummer erreicht und dort nicht mit melonDS verglichen.
+- Die Wiederholbarkeit ist nur auf einem Rechner und in einem Lauf bis Tick 2000 geprüft.
 
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 

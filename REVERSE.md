@@ -292,7 +292,18 @@ Overlay-Tabelle in der ROM: 32 Byte je Eintrag. Das Feld bei `+0x1C` enthält in
 
 ### State Machine
 
-*(noch offen)*
+Start des Spiels, in melonDS am Bild und an `mode_state` gesehen:
+
+| Modus | Szene | Overlay | Inhalt |
+|---|---|---|---|
+| 0x83 | 87 | 83 | Logos, lädt `data/logo_data_LZ.bin`, rund 130 Ticks; Tastenkombination 0xF03 (A, B, R, L, X, Y) führt in einen eigenen Zweig (Inhalt nicht untersucht) |
+| 0x84 | 88 | 84 | Titelbild „Touch to Start“, nach rund 2.300 Ticks ohne Eingabe weiter zum Intro |
+| 0x85 | 89 | 84 | Zwei Ticks Übergang, Inhalt nicht gesehen |
+| 0x9A | 110 | 105 | Story-Intro; A führt zurück zum Titel |
+| 0x86 | 90 | 85 | Spielstand-Auswahl |
+| 0x87 | 91 | 86 | Hauptmenü |
+
+Boot-Daten für das Spiel, in melonDS gelesen: Besitzer-Einstellungen ab `0x027FFC80` (Name ab +6 in UTF-16, Länge +0x1A, Kalibrierung +0x58, Sprache +0x64 Bits 0 bis 2), Tastenwort `0x027FFFA8` ruhend 0x2C00, Touch-Wort `0x027FFFAA` ruhend 0x06000000, Uhr `0x027FFDE8` als BCD: Jahr, Monat, Tag, Wochentag, Stunde, Minute, Sekunde.
 
 ---
 
