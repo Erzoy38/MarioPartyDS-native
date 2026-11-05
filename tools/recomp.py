@@ -479,18 +479,20 @@ def follow_jump_tables(tracer, space):
             done.add(addr)
             entry = addr + 8
             # The compare before it says how many entries there are, whatever they contain.
+            # Only "cmp then addls" bounds the table by the compare; other forms (addpl after a
+            # subtraction, addge after cmp #0) run on while the entries are branches or returns.
             compare = space.u32(addr - 4)
             count = None
-            if compare is not None and (compare & 0x0FF00000) == 0x03500000:
+            if compare is not None and (compare & 0x0FF00000) == 0x03500000 and (insn.raw >> 28) == 9:
                 count = (compare & 0xFF) + 1
             index = 0
             while True:
                 word = space.u32(entry)
                 if word is None:
                     break
-                if count is None and (word & 0xFF000000) != 0xEA000000:
+                if count is None and (word & 0xFF000000) != 0xEA000000 and (word & 0xFFFF8000) != 0xE8BD8000:
                     break
-                if count is not None and index >= count:
+                if (count is not None and index >= count) or index >= 256:
                     break
                 tracer.add(entry, False, None)
                 entry += 4
