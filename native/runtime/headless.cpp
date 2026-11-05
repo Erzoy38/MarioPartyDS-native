@@ -249,6 +249,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--wav")) g_wav_path = argv[i + 1];
         else if (!std::strcmp(argv[i], "--force-mode")) g_force_mode = int(std::strtol(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--name")) settings.player_name = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--boot-type")) settings.boot_type = u16(std::strtoul(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--save")) settings.save = read_file(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--input")) add_input(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--repeat")) {

@@ -334,6 +334,30 @@ Der ARM7-Ersatz bedient die PXI-Kanäle 5 (Uhr), 6 (Touch), 7 (Sound), 8 (Strom 
 - Nach einer Abkürzung landet das Spiel am Ende eines Minispiels im internen Entwicklermenü „MP-NDS MENU“. Das ist Spielverhalten, kein Fehler: Ohne echtes Menü weiß es nicht, wohin zurück.
 - Fehlender Code wird weiter erst beim Ausführen gefunden. Diese Party brauchte rund 25 Nachträge, die Matrix etwa 140.
 
+### Zwischenstand Phase 8 [aus dem Code gelesen, ein Startversuch]
+
+**Spiel-Schnittstelle zum Netz (Glue, 0x02026B14 bis 0x02028100):** klein und klar.
+
+| Adresse | Aufgabe (aus dem Code) |
+|---|---|
+| `0x02027110` | Netz an? Liefert WH-Zustand + 1, oder 0 |
+| `0x0202713C` | Bin ich Gast? (über `0x02024FA8`) |
+| `0x02027158` | Bitmaske der verbundenen Spieler; Host aus WH, Gast aus den geteilten Daten |
+| `0x0202719C` | Anzahl der Spieler (Bits der Maske) |
+| `0x02027068` | Warten, bis alle Spieler dasselbe Synchronisations-Bit melden |
+| `0x02026C80` | Netz einschalten: WM an, `WH_Initialize` (`0x02024954`), Puffer leeren |
+| `0x02026D58` | Netz aus |
+| `0x02026DDC` | Als Host öffnen: Datenaustausch einrichten (`0x020229E0`), dann `0x02024A9C` (vermutlich `WH_ParentConnect`) |
+| `0x02026E80` | Als Gast verbinden (`0x02022BF8`, `0x020238B0`); bei Start per Download mit den Host-Daten ab `0x027FFC44` |
+
+**WH-Bibliothek (0x02022000 bis 0x02024F4C):** nur von der Glue-Schicht und vom Eingabe-Code aufgerufen, rund 20 Einstiege. Zustände wie im SDK-Beispiel (`0x020245B0` liefert sie): 1 bereit, 2 Suche, 3 beschäftigt, 7 Kanalmessung, 8 Verbindung fehlgeschlagen, 9 Fehler.
+
+**Start als Download-Gast** (Bootart 2, neue Option `--boot-type 2`): Das Spiel bleibt in Szene 0 und wartet auf PXI-Kanal 15. Der gehört vermutlich zum Funktreiber des ARM7. Gäste laden im Original Overlays und Dateien über Funk vom Host (WFS, Prüfsummen ab `0x020BD408`). 27 Stellen im Code unterscheiden die Bootart.
+
+**Folgerung, noch nicht entschieden:** Zwei Wege.
+1. ARM7-Funktreiber (WM über PXI 10 und 15) nachbilden. Der Spielcode bleibt dabei ganz original, inklusive Download und WFS. Dafür muss das Netz Funkpakete tragen. Groß, aber allgemein.
+2. WH, MB und WFS auf Ebene ihrer Funktionen ersetzen. Gäste lesen Dateien dann aus der eigenen ROM. Kleiner je Baustein, braucht aber für jede ersetzte Funktion den belegten Ablauf.
+
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 
 **Früher Teilnutzen:** Nach Phase 8 ist ein Vier-Spieler-Betrieb im Heimnetz testbar, aber nur nach Bestehen der Tests.

@@ -113,7 +113,7 @@ void machine_boot(const std::vector<u8>& rom, const MachineSettings& settings) {
     const u32 size = header_u32(rom, 0x2C);
     for (u32 i = 0; i < size; ++i) wr8(ram_address + i, rom[rom_offset + i]);
     for (u32 i = 0; i < 0x170; ++i) wr8(0x027FFE00u + i, rom[i]);
-    wr16(0x027FFC40u, 1);  // boot type: started from a card
+    wr16(0x027FFC40u, settings.boot_type);  // boot type: 1 card, 2 download play
     wr32(0x027FFF8Cu, 0x0003FFF0u);  // ARM7 services ready: the channels set in melonDS
     hw_set_keys(0);
     write_user_settings(settings.player_name);
