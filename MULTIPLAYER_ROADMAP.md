@@ -195,7 +195,7 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 | 4 | 2D-Darstellung, Eingabe, Dateien, Spielstand. **Erreicht mit Einschränkungen** (siehe unten) | Titel und Menüs bedienbar; pixelweiser Vergleich |
 | 5 | 3D. **Erreicht mit Einschränkungen** (siehe unten) | Brett und Figuren wie im Emulator |
 | 6 | Sound. **Erreicht mit Einschränkungen** (siehe unten) | Musik und Effekte im Vergleich hörbar |
-| 7 | Lokale Vollständigkeit | Eine Party lokal von Anfang bis Ende; Minispiel-Matrix lokal |
+| 7 | Lokale Vollständigkeit. **Erreicht mit Einschränkungen** (siehe unten) | Eine Party lokal von Anfang bis Ende; Minispiel-Matrix lokal |
 | 8 | Netz im eigenen Rechner: Lockstep, Server headless | 4 Prozesse lokal, Prüfsummen gleich über eine ganze Partie |
 | 9 | Minispiele einzeln online, Matrix mit 73 Zeilen | Jedes Spiel gestartet, gespielt, Ergebnis gleich bei allen; Grenzen dokumentiert |
 | 10 | Lobby, Codes, Charakterwahl, Oberfläche | Ablauf von Raum bis Start in 4 Prozessen |
@@ -311,6 +311,28 @@ Der ARM7-Ersatz bedient die PXI-Kanäle 5 (Uhr), 6 (Touch), 7 (Sound), 8 (Strom 
 - Nicht gebaut: direkte Kanalsteuerung (`0x0C` bis `0x17`), Alarme, Sound-Capture, Mikrofon. Sie werden gezählt und protokolliert, kamen bisher nicht vor. Das Mic-Test-Menü und mikrofongesteuerte Minispiele sind damit offen.
 - Die Gesamtlautstärke (Faktor 0,5) ist selbst festgelegt. PSG-Stimmung und Rauschen sind nur nach Formel gebaut.
 - Sound-Zustände außer Tick, Player und Kanälen werden nicht geschrieben.
+
+### Ergebnis Phase 7 [gemessen, nativer Lauf mit Tasten-Skript]
+
+**Ganze Party:** Neue Partie auf Wiggler's Garden, Battle Royale, 10 Runden, Mario gegen drei Computer, gesteuert nur durch A und einen Touch alle 45 Ticks. Ohne Abbruch bis „Party Results“ (Szene 95) bei Tick 100.907, rund 28 Minuten Spielzeit. Dazwischen 11 Minispiele (Szenen 48, 49, 46, 47, 55, 41, 20, 53, 57, 45, 61), jedes mit Rückkehr aufs Brett. Der Spielstand lag dabei nur im Speicher.
+
+**Minispiel-Matrix:** `tools/minigame_matrix.py` startet alle 73 Minispiele, je in einem eigenen Prozess, mit gemischten Tasten, Touch und Pusten. Ergebnis in `run/matrix/results.csv` (nicht im Repository, enthält Spieltitel).
+
+| Prüfung | Ergebnis |
+|---|---|
+| Läuft bis zum Ende der Testzeit (1.500 Ticks) | 73 von 73 |
+| Eingestiegen über eine Abkürzung (`--force-mode`) | 69, davon 4 Pustespiele erst nach Einbau des Mikrofons |
+| Nur über das echte Menü startbar | 4 Puzzles (Szenen 72, 73, 74, 76): Über die Abkürzung fehlen ihre Textdateien, das Spiel hält in einer eigenen Prüfung an |
+| Zeichnet 3D, macht Ton | alle, die 3D brauchen; alle haben Noten |
+
+**Mikrofon:** Kanal 9 nachgebaut nach dem ARM9-Code. Die Eingabe ist nur „pusten oder nicht“, auf der Leertaste oder dem linken Trigger. So kann sie später mit den Tasten übers Netz gehen.
+
+**Grenzen:**
+- Die Eingaben zielen auf nichts. „Läuft“ heißt: startet, zeichnet, tickt weiter. Nicht: ist spielbar und richtig. Kein Minispiel ist gezielt gespielt worden.
+- Mit melonDS ist von den Minispielen keines verglichen.
+- Die Party lief auf einem Brett von fünf, im Modus Battle Royale, ohne Tag Battle und Duel. Story-, Minispiel-, Puzzle-Modus und Galerie sind nur angelaufen oder gar nicht geprüft.
+- Nach einer Abkürzung landet das Spiel am Ende eines Minispiels im internen Entwicklermenü „MP-NDS MENU“. Das ist Spielverhalten, kein Fehler: Ohne echtes Menü weiß es nicht, wohin zurück.
+- Fehlender Code wird weiter erst beim Ausführen gefunden. Diese Party brauchte rund 25 Nachträge, die Matrix etwa 140.
 
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 
