@@ -2,6 +2,7 @@
 // comparison. Reads the player's ROM at run time; nothing from it is built into this file.
 //
 // Usage: MarioPartyDS-headless <rom.nds> --stop 0x02003000 --dump <folder> [--max-blocks N]
+#define _CRT_SECURE_NO_WARNINGS  // sscanf reads the command line here, with field widths
 #include "cpu.h"
 #include "hw.h"
 #include "memory.h"
@@ -94,8 +95,82 @@ void print_watched() {
     }
 }
 
+// --input TICK:WHAT[:FRAMES], repeatable, from game tick TICK on for FRAMES ticks (default 6).
+// WHAT is a key name, or touch;X;Y in pixels. Same script, same run: this is how tests play.
+struct ScriptedInput {
+    u64 tick;
+    u32 keys;
+    bool touch;
+    u32 x, y;
+    u64 frames;
+};
+std::vector<ScriptedInput> g_script;
+
+void add_input(const char* text) {
+    static const char* const kNames[] = {"A", "B", "SELECT", "START", "RIGHT", "LEFT",
+                                         "UP", "DOWN", "R", "L", "X", "Y"};
+    char what[32] = {};
+    unsigned long long tick = 0, frames = 6;
+    if (std::sscanf(text, "%llu:%31[^:]:%llu", &tick, what, &frames) < 2) {
+        std::fprintf(stderr, "bad --input %s\n", text);
+        std::exit(2);
+    }
+    ScriptedInput input{tick, 0, false, 0, 0, frames};
+    if (std::sscanf(what, "touch;%u;%u", &input.x, &input.y) == 2) {
+        input.touch = true;
+    } else {
+        for (u32 i = 0; i < 12; ++i) {
+            if (!std::strcmp(what, kNames[i])) input.keys = 1u << i;
+        }
+        if (input.keys == 0) {
+            std::fprintf(stderr, "bad key in --input %s\n", text);
+            std::exit(2);
+        }
+    }
+    g_script.push_back(input);
+}
+
+void apply_script(u64 tick) {
+    u32 keys = 0;
+    bool touching = false;
+    u32 x = 0, y = 0;
+    for (const ScriptedInput& input : g_script) {
+        if (tick < input.tick || tick >= input.tick + input.frames) continue;
+        keys |= input.keys;
+        if (input.touch) {
+            touching = true;
+            x = input.x;
+            y = input.y;
+        }
+    }
+    hw_set_keys(keys);
+    hw_set_touch(touching, x, y);
+}
+
+// The owner settings the firmware leaves at 0x027FFC80 for the game, in the layout seen in
+// melonDS: version, birthday, name, touch calibration, language. Fixed except for the name, so
+// every player's game starts alike.
+void write_user_settings(const std::string& name) {
+    constexpr u32 kSettings = 0x027FFC80;
+    constexpr u32 kLanguageEnglish = 1;
+    for (u32 i = 0; i < 0x70; ++i) wr8(kSettings + i, 0);
+    wr16(kSettings, 5);       // version
+    wr8(kSettings + 3, 1);    // birthday, month
+    wr8(kSettings + 4, 1);    // birthday, day
+    const std::size_t length = std::min<std::size_t>(name.size(), 10);
+    for (std::size_t i = 0; i < length; ++i) wr16(kSettings + 6 + u32(i) * 2, u8(name[i]));
+    wr16(kSettings + 0x1A, u16(length));
+    // Calibration: raw 0x0FF0 is pixel 255, raw 0x0BF0 is pixel 191, raw 0 is pixel 0.
+    wr16(kSettings + 0x5E, 0x0FF0);
+    wr16(kSettings + 0x60, 0x0BF0);
+    wr8(kSettings + 0x62, 0xFF);
+    wr8(kSettings + 0x63, 0xBF);
+    wr8(kSettings + 0x64, u8(0x30 | kLanguageEnglish));  // upper bits as seen in melonDS
+}
+
 void watch_progress(const Cpu& c) {
     static s16 last_scene = -1;
+    if (c.pc == kGameTick) apply_script(g_game_ticks + 1);
     if (!g_watched.empty()) {
         const auto hit = g_watched.find(c.pc);
         if (hit != g_watched.end()) ++hit->second;
@@ -161,12 +236,17 @@ int main(int argc, char** argv) {
     u32 stop = 0x02003000;
     u64 max_blocks = 2000000000ULL;
     std::string dump;
+    std::string player_name = "Player";
+    std::string save_path;
     for (int i = 2; i + 1 < argc; i += 2) {
         if (!std::strcmp(argv[i], "--stop")) stop = u32(std::strtoul(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--dump")) dump = argv[i + 1];
         else if (!std::strcmp(argv[i], "--max-blocks")) max_blocks = std::strtoull(argv[i + 1], nullptr, 0);
         else if (!std::strcmp(argv[i], "--watch")) g_watched[u32(std::strtoul(argv[i + 1], nullptr, 0))] = 0;
         else if (!std::strcmp(argv[i], "--dump-tick")) g_dump_ticks.insert(std::strtoull(argv[i + 1], nullptr, 0));
+        else if (!std::strcmp(argv[i], "--name")) player_name = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--save")) save_path = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--input")) add_input(argv[i + 1]);
     }
 
     const std::vector<u8> rom = read_file(argv[1]);
@@ -179,10 +259,10 @@ int main(int argc, char** argv) {
     for (u32 i = 0; i < size; ++i) wr8(ram_address + i, rom[rom_offset + i]);
     for (u32 i = 0; i < 0x170; ++i) wr8(0x027FFE00u + i, rom[i]);
     wr16(0x027FFC40u, 1);  // boot type: started from a card
-    wr32(0x027FFF8Cu, 0xFFFFFFFFu);  // ARM7 services ready; the stand-in serves every channel
-    // X, Y (bits 10-11) and debug (bit 13) come through the ARM7; high means released. Bit 15 is
-    // the closed lid, which 0x01FFC354 treats as no input.
-    wr16(0x027FFFA8u, 0x2C00);
+    wr32(0x027FFF8Cu, 0x0003FFF0u);  // ARM7 services ready: the channels set in melonDS
+    hw_set_keys(0);
+    write_user_settings(player_name);
+    if (!save_path.empty()) hw_set_save(read_file(save_path));
     // Boot data the firmware leaves behind, as seen in melonDS. The game compares the chip id
     // here with the card's to detect a removed card.
     for (u32 base : {0x027FF800u, 0x027FFC00u}) {

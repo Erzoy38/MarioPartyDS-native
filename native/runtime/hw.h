@@ -4,6 +4,8 @@
 
 #include "cpu.h"
 
+#include <vector>
+
 // Blocks per scanline: a stand-in until the timing is compared with melonDS.
 constexpr u32 kBlocksPerLine = 200;
 constexpr u32 kLinesPerFrame = 263;
@@ -33,6 +35,13 @@ void hw_step(Cpu& c);
 bool hw_read(u32 addr, u32 size, u32& value);   // true if handled
 bool hw_write(u32 addr, u32 size, u32 value);   // true if handled
 void hw_raise(u32 flags);
+
+// What the player does. Keys use the DS order: A, B, Select, Start, Right, Left, Up, Down, R, L,
+// X, Y from bit 0, set while pressed. Touch positions are screen pixels.
+void hw_set_keys(u32 pressed);
+void hw_set_touch(bool touching, u32 x, u32 y);
+// Contents of the save memory at start. A copy: nothing is ever written back to a file.
+void hw_set_save(const std::vector<u8>& contents);
 inline constexpr bool kHwDeterministic = true;
 
 // Pseudo code standing in for the ARM9 BIOS at 0xFFFF0000.

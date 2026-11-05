@@ -21,6 +21,7 @@ bool g_ipc_sync_irq_on = false, g_fifo_send_irq_on = false, g_fifo_recv_irq_on =
 std::deque<u32> g_fifo_to_arm9;
 u32 g_fifo_last = 0;
 std::map<u32, u32> g_tag_counts;
+u32 g_keys_pressed = 0;
 
 // Stand-in for the ARM7 side of the game's message channel. A word is tag (bits 0-4), flag
 // (bit 5: the receiver's third callback argument, see 0x020675CC) and data (bits 6-31).
@@ -35,7 +36,7 @@ void arm7_reply(u32 tag, u32 data, bool flag = false) {
 void arm7_rtc(u32 data) {
     constexpr u32 kDateTimeArea = 0x027FFDE8;
     const u32 command = (data >> 8) & 0x7F;
-    wr32(kDateTimeArea, 0x03010106);       // 2006-01-01, weekday in the top byte
+    wr32(kDateTimeArea, 0x00010106);       // 2006-01-01, a Sunday; weekday in the top byte
     wr32(kDateTimeArea + 4, 0x00000012);   // 12:00:00
     arm7_reply(5, command << 8);           // result 0: success
 }
@@ -55,7 +56,7 @@ std::vector<u8> g_memory;
 u8& at(u32 address) {
     const u32 total = rd32(g_block + kTotalSize);
     const u32 size = total ? total : 1;
-    if (g_memory.size() != size) g_memory.assign(size, 0xFF);  // erased
+    if (g_memory.size() != size) g_memory.resize(size, 0xFF);  // erased beyond any loaded save
     return g_memory[address % size];
 }
 
@@ -149,8 +150,11 @@ void arm7_power(u32 data) {
 
 // Touch screen. The game asks for one sample (request at 0x0206A8E4); the ARM7 leaves it at
 // 0x027FFFAA and replies with bit 24 set, command 0, result 0 (callback at 0x0206A430).
-// Word layout: x bits 0-11, y bits 12-23, touched bit 24, validity bits 25-26.
-// Nobody is touching the screen yet: the input layer comes with the window.
+// Word layout: x bits 0-11, y bits 12-23, touched bit 24, validity bits 25-26. Raw x and y are
+// pixels times 16, which is what the calibration data in the boot area says. With no touch the
+// word is 0x06000000 (measured in melonDS).
+u32 g_touch_word = 0x06000000;
+
 void arm7_touch(u32 data) {
     constexpr u32 kSampleRequest = 0x03000000;
     constexpr u32 kTouchArea = 0x027FFFAA;
@@ -158,8 +162,8 @@ void arm7_touch(u32 data) {
         if (++g_tag_counts[6] <= 12) std::printf("touch request %#x: not handled\n", data);
         return;
     }
-    wr16(kTouchArea, 0);
-    wr16(kTouchArea + 2, 0);
+    wr16(kTouchArea, u16(g_touch_word));
+    wr16(kTouchArea + 2, u16(g_touch_word >> 16));
     arm7_reply(6, 0x01000000);
 }
 
@@ -430,6 +434,7 @@ void next_line() {
         dma_trigger(1);
     }
     if (g_hw.line < kFirstVBlankLine) dma_trigger(2);  // HBlank
+    if (stat & 0x10) hw_raise(irq::kHBlank);
     stat = u16((stat & ~1u) | (vblank_line ? 1u : 0u));
     const u32 target = (stat >> 8) | ((stat & 0x80u) << 1);
     const bool match = g_hw.line == target;
@@ -441,6 +446,18 @@ void next_line() {
 }  // namespace
 
 void hw_raise(u32 flags) { set_io32(0x214, io32(0x214) | flags); }
+
+void hw_set_keys(u32 pressed) {
+    g_keys_pressed = pressed;
+    // X and Y travel through the ARM7: bits 10-11 high when released, debug bit 13 stays high.
+    wr16(0x027FFFA8u, u16(0x2000u | (~pressed & 0x0C00u)));
+}
+
+void hw_set_touch(bool touching, u32 x, u32 y) {
+    g_touch_word = touching ? ((x << 4) | (y << 16) | (1u << 24)) : 0x06000000u;
+}
+
+void hw_set_save(const std::vector<u8>& contents) { backup::g_memory = contents; }
 
 void hw_step(Cpu& c) {
     if (++g_hw.line_blocks >= kBlocksPerLine) next_line();
@@ -474,7 +491,7 @@ bool hw_read(u32 addr, u32 size, u32& value) {
     switch (addr) {
         case 0x04100010: value = card_next_word(); return true;
         case 0x04000006: value = g_hw.line; return true;
-        case 0x04000130: value = 0x03FF; return true;  // KEYINPUT: low means pressed, none yet
+        case 0x04000130: value = 0x03FF & ~g_keys_pressed; return true;  // low means pressed
         case 0x04000180:  // IPCSYNC: low nibble comes from the ARM7
             value = g_ipc_recv | (u32(g_ipc_out) << 8) | (g_ipc_sync_irq_on ? 0x4000u : 0);
             return true;
