@@ -37,9 +37,16 @@ void mark_unloaded(u32 id) {
 
 }  // namespace
 
-void overlay_watch_calls(const Cpu& c) {
-    if (c.pc == kLoadOverlay && c.r[0] == kCpuArm9) mark_loaded(c.r[1]);
-    else if (c.pc == kUnloadOverlay && c.r[0] == kCpuArm9) mark_unloaded(c.r[1]);
+bool overlay_watch_calls(const Cpu& c) {
+    if (c.pc == kLoadOverlay && c.r[0] == kCpuArm9) {
+        mark_loaded(c.r[1]);
+        return true;
+    }
+    if (c.pc == kUnloadOverlay && c.r[0] == kCpuArm9) {
+        mark_unloaded(c.r[1]);
+        return true;
+    }
+    return false;
 }
 
 BlockFn overlay_find_block(u32 pc, u32 thumb, int* overlay_id) {

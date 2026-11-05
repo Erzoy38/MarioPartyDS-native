@@ -14,6 +14,15 @@ namespace {
 Cpu g_cpu;
 AbortHook g_abort_hook = nullptr;
 
+// Finding a block by search is slow, and most blocks run again soon. Emptied when overlays change,
+// because the same address then means other code. It only saves time: the result stays the same.
+struct BlockCacheEntry {
+    u32 key;
+    BlockFn fn;
+};
+constexpr u32 kBlockCacheSize = 1u << 16;
+BlockCacheEntry g_block_cache[kBlockCacheSize];
+
 u32 header_u32(const std::vector<u8>& rom, std::size_t offset) {
     u32 value;
     std::memcpy(&value, &rom[offset], 4);
@@ -122,7 +131,13 @@ void machine_step() {
     Cpu& c = g_cpu;
     hw_step(c);
     if (g_hw.halted) return;  // time passes until an interrupt wakes the CPU
-    overlay_watch_calls(c);
+    if (overlay_watch_calls(c)) std::memset(g_block_cache, 0, sizeof g_block_cache);
+    const u32 key = c.pc | c.thumb;
+    BlockCacheEntry& cached = g_block_cache[(key >> 1) & (kBlockCacheSize - 1)];
+    if (cached.key == key && cached.fn != nullptr) {
+        cached.fn(c);
+        return;
+    }
     BlockFn block = bios_block(c.pc);
     int overlay_id = -1;
     if (block == nullptr) {
@@ -138,6 +153,7 @@ void machine_step() {
         else std::printf("MISSING %08x %d\n", c.pc, c.thumb);
         runtime_abort(c.thumb ? "no translated Thumb code" : "no translated code", c.pc);
     }
+    cached = {key, block};
     block(c);
 }
 
