@@ -194,7 +194,7 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 | 3 | Code-Abdeckung, Interrupts, Task-System, Overlays. **Erreicht mit Einschränkungen** (siehe unten) | Headless bis ins Hauptmenü, RAM-Abgleich über Hunderte Bilder |
 | 4 | 2D-Darstellung, Eingabe, Dateien, Spielstand. **Erreicht mit Einschränkungen** (siehe unten) | Titel und Menüs bedienbar; pixelweiser Vergleich |
 | 5 | 3D. **Erreicht mit Einschränkungen** (siehe unten) | Brett und Figuren wie im Emulator |
-| 6 | Sound | Musik und Effekte im Vergleich hörbar |
+| 6 | Sound. **Erreicht mit Einschränkungen** (siehe unten) | Musik und Effekte im Vergleich hörbar |
 | 7 | Lokale Vollständigkeit | Eine Party lokal von Anfang bis Ende; Minispiel-Matrix lokal |
 | 8 | Netz im eigenen Rechner: Lockstep, Server headless | 4 Prozesse lokal, Prüfsummen gleich über eine ganze Partie |
 | 9 | Minispiele einzeln online, Matrix mit 73 Zeilen | Jedes Spiel gestartet, gespielt, Ergebnis gleich bei allen; Grenzen dokumentiert |
@@ -291,6 +291,26 @@ Der ARM7-Ersatz bedient die PXI-Kanäle 5 (Uhr), 6 (Touch), 7 (Sound), 8 (Strom 
 - Display-Capture lief 1.152 Zeilen lang, die Wirkung ist nicht gegen melonDS geprüft. Der Hauptspeicher-FIFO als Capture-Quelle fehlt.
 - Fehlt: Antialiasing, 1-Punkt-Polygone, Rear-Plane-Bitmap, Drahtgitter bei Alpha 0.
 - Die Polygon-Zählung im Spiel konnte nicht verglichen werden: melonDS meldete den Wert mitten im Aufbau einer Liste.
+
+### Ergebnis Phase 6 [Hörtest vom Nutzer, Zähler gegen melonDS]
+
+`native/runtime/sound.cpp` baut den ARM7-Soundtreiber nach: Sequenzer mit Spuren und Variablen, Hüllkurven, Modulation, Portamento, 16 Kanäle mit PCM, ADPCM, PSG und Rauschen, Mixer mit Ausgabe über SDL3. Tabellen werden zur Laufzeit aus dem ARM7-Teil der ROM gelesen, nicht mitgeliefert. Der Spielzustand hängt nur an Ganzzahlen; die Lautstärken rechnen mit Gleitkomma, fließen aber nicht ins Spiel zurück.
+
+| Prüfung | Ergebnis |
+|---|---|
+| Hörtest durch den Nutzer | „Klingt richtig“; die Änderung an Spur-Parametern und Priorität kam danach und ist noch nicht gehört |
+| Player-Tick bei Spiel-Tick 1000 | 642, in melonDS 642 |
+| Player-Tick bei Spiel-Tick 300 | 403, in melonDS 397 |
+| Beginn Szene 110 | Tick 2480, in melonDS 2484 (vor dem Sound 2412) |
+| Zwei gleiche Läufe | bei Tick 1000 im Hauptspeicher byteweise gleich; vor der letzten Änderung geprüft |
+| Runde mit Minispiel | läuft durch, 11.533 Noten, keine ungebauten Befehle |
+
+**Grenzen:**
+- Die Bedeutung vieler Sequenz-Befehle stammt aus der Kenntnis des Formats, nicht aus jeder einzelnen Stelle im ARM7-Code.
+- `0x1E` bis `0x20` als „dieser Speicher wird frei“ sind aus den Argumenten erschlossen. `0x18` wird ignoriert.
+- Nicht gebaut: direkte Kanalsteuerung (`0x0C` bis `0x17`), Alarme, Sound-Capture, Mikrofon. Sie werden gezählt und protokolliert, kamen bisher nicht vor. Das Mic-Test-Menü und mikrofongesteuerte Minispiele sind damit offen.
+- Die Gesamtlautstärke (Faktor 0,5) ist selbst festgelegt. PSG-Stimmung und Rauschen sind nur nach Formel gebaut.
+- Sound-Zustände außer Tick, Player und Kanälen werden nicht geschrieben.
 
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 

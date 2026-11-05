@@ -63,8 +63,9 @@ struct Channel {
 
 struct Track {
     bool active = false, note_wait = true, porta = false, tie = false, compare = true, mute = false;
-    u8 player = 0, priority = 0, volume = 127, expression = 127, bend_range = 2;
-    s8 pan = 0, transpose = 0, bend = 0;
+    u8 player = 0, priority = 0x40, volume = 127, expression = 127, bend_range = 2;
+    s8 pan = 0, ext_pan = 0, transpose = 0, bend = 0;
+    s16 ext_pitch = 0;
     u16 program = 0;
     s32 fader = 0;
     u32 start = 0, pc = 0, base = 0;
@@ -505,8 +506,8 @@ void start_note(Player& player, Track& t, u32 key, u32 velocity, s32 length) {
 void update_track_channels(Player& player, Track& t) {
     s32 volume = s32(g_decibel_square[t.volume & 127]) + s32(g_decibel_square[t.expression & 127])
                  + s32(g_decibel_square[player.volume() & 127]) + t.fader + player.fader();
-    const s32 pitch = (s32(t.bend) * s32(t.bend_range)) * 64 / 128;
-    const s32 pan = t.pan;
+    const s32 pitch = (s32(t.bend) * s32(t.bend_range)) * 64 / 128 + t.ext_pitch;
+    const s32 pan = t.pan + t.ext_pan;
     for (u32 i = 0; i < t.channel_count; ++i) {
         Channel& ch = *t.channels[i];
         ch.volume = t.mute ? -723 : volume;
@@ -854,6 +855,46 @@ void run_command(u32 id, u32 a0, u32 a1, u32 a2, u32 a3) {
                 std::memcpy(g_players[a0].bytes + a1, &a2, a3);
             }
             break;
+        case 0x07: {
+            // Writes a field of the tracks, by its offset in the driver's own track structure
+            // (arm7.bin file offset 0x5AC4 shows the layout).
+            const u32 player = a0 & 0xFFFFFF, size = a0 >> 24;
+            if (player >= kPlayers) break;
+            for (u32 i = 0; i < 16; ++i) {
+                const u8 index = g_players[player].tracks[i];
+                if (!(a1 & (1u << i)) || index == 0xFF) continue;
+                Track& t = g_tracks[index];
+                switch (a2) {
+                    case 0x02: t.program = u16(a3); break;
+                    case 0x04: t.volume = u8(a3); break;
+                    case 0x05: t.expression = u8(a3); break;
+                    case 0x06: t.bend = s8(a3); break;
+                    case 0x07: t.bend_range = u8(a3); break;
+                    case 0x08: t.pan = s8(a3); break;
+                    case 0x09: t.ext_pan = s8(a3); break;
+                    case 0x0A: t.fader = s16(a3); break;
+                    case 0x0C: t.ext_pitch = s16(a3); break;
+                    case 0x0E: t.attack = u8(a3); break;
+                    case 0x0F: t.decay = u8(a3); break;
+                    case 0x10: t.sustain = u8(a3); break;
+                    case 0x11: t.release = u8(a3); break;
+                    case 0x12: t.priority = u8(a3); break;
+                    case 0x13: t.transpose = s8(a3); break;
+                    case 0x14: t.porta_key = u8(a3); break;
+                    case 0x15: t.porta_time = u8(a3); break;
+                    case 0x16: t.sweep_pitch = s16(a3); break;
+                    case 0x1E: t.channel_mask = u16(a3); break;
+                    default:
+                        ++g_stats.unknown_commands;
+                        if (!warned[7]) {
+                            warned[7] = true;
+                            std::printf("track field %#x size %u not built\n", a2, size);
+                        }
+                        break;
+                }
+            }
+            break;
+        }
         case 0x08:
             if (a0 < kPlayers) {
                 for (u32 i = 0; i < 16; ++i) {
