@@ -1,6 +1,7 @@
 #include "hw.h"
 
 #include "memory.h"
+#include "ppu.h"
 
 #include <cstdio>
 #include <cstdint>
@@ -433,7 +434,11 @@ void next_line() {
         if (stat & 0x08) hw_raise(irq::kVBlank);
         dma_trigger(1);
     }
-    if (g_hw.line < kFirstVBlankLine) dma_trigger(2);  // HBlank
+    if (g_hw.line < kFirstVBlankLine) {
+        ppu_render_line(g_hw.line);
+        dma_trigger(2);  // HBlank
+    }
+    if (g_hw.line == kFirstVBlankLine) ppu_finish_frame();
     if (stat & 0x10) hw_raise(irq::kHBlank);
     stat = u16((stat & ~1u) | (vblank_line ? 1u : 0u));
     const u32 target = (stat >> 8) | ((stat & 0x80u) << 1);
@@ -579,6 +584,11 @@ bool hw_write(u32 addr, u32 size, u32 value) {
     if (addr == 0x04000214) {  // IF: writing 1 clears a flag
         const u32 mask = size == 4 ? value : size == 2 ? (value & 0xFFFF) : (value & 0xFF);
         set_io32(0x214, io32(0x214) & ~mask);
+        return true;
+    }
+    if (addr < 0x0400024A && addr + size > 0x04000240) {  // VRAM bank control
+        for (u32 i = 0; i < size; ++i) g_machine.io[(addr & 0xFFFF) + i] = u8(value >> (i * 8));
+        vram_remap();
         return true;
     }
     if (addr == 0x04000004 && size >= 2) {  // DISPSTAT: flag bits are read only

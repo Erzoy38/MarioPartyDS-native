@@ -7,6 +7,7 @@
 #include "hw.h"
 #include "memory.h"
 #include "overlay.h"
+#include "ppu.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -52,6 +53,9 @@ void write_all_dumps(const std::string& path) {
     write_dump(folder, "dtcm.bin", g_machine.dtcm);
     write_dump(folder, "palette.bin", g_machine.palette);
     write_dump(folder, "oam.bin", g_machine.oam);
+    std::ofstream picture(folder / "frame.rgba", std::ios::binary);
+    picture.write(reinterpret_cast<const char*>(ppu_frame()),
+                  std::streamsize(kScreenWidth) * kScreenHeight * 2 * 4);
 }
 
 // --dump-tick N, repeatable: also dumps to <dump>/tickN when game tick N starts.
@@ -84,6 +88,9 @@ void print_progress() {
                 static_cast<unsigned long long>(g_scene_changes), s16(rd16(kModeState)),
                 rd8(kModeState + 0xC), rd8(kModeState + 0xD), s16(rd16(kSlotScene)),
                 s16(rd16(kSlotScene + 2)));
+    std::printf("lines without 3D or capture drawn: 3D %llu, capture %llu\n",
+                static_cast<unsigned long long>(ppu_gaps().lines_with_3d),
+                static_cast<unsigned long long>(ppu_gaps().lines_with_capture));
 }
 
 // --watch ADDR, repeatable: counts how often a block start is reached. For finding a stuck spot.

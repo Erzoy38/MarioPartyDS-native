@@ -16,7 +16,7 @@ target_link_libraries(MarioPartyDS PRIVATE user32 gdi32)
 file(GLOB GENERATED CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/generated/*.cpp")
 if(GENERATED)
     add_library(runtime STATIC runtime/cpu.cpp runtime/memory.cpp runtime/hw.cpp runtime/bios.cpp
-                runtime/overlay.cpp)
+                runtime/overlay.cpp runtime/ppu.cpp)
     target_include_directories(runtime PUBLIC runtime)
     target_compile_options(runtime PRIVATE /W4 /WX /utf-8)
 
