@@ -189,6 +189,20 @@ void apply_script(u64 tick) {
     hw_set_touch(touching, x, y);
 }
 
+// --force-mode MODE: the first time the game picks its next mode after the title (mode 0x86, the
+// save select) it goes to MODE instead. A shortcut for tests; the state a real menu would have set
+// up is missing, so a scene reached this way may behave differently.
+int g_force_mode = -1;
+constexpr u32 kSetNextMode = 0x0201A3AC;
+
+void apply_forced_mode(Cpu& c) {
+    if (g_force_mode >= 0 && c.pc == kSetNextMode && c.r[0] == 0x86) {
+        std::printf("forcing mode %#x\n", g_force_mode);
+        c.r[0] = u32(g_force_mode);
+        g_force_mode = -1;
+    }
+}
+
 void watch_progress(const Cpu& c) {
     static s16 last_scene = -1;
     if (c.pc == kGameTick) apply_script(g_game_ticks + 1);
@@ -228,6 +242,7 @@ int main(int argc, char** argv) {
             if (std::sscanf(argv[i + 1], "%llu:%llu", &from, &to) == 2) g_frame_ranges.push_back({from, to});
         }
         else if (!std::strcmp(argv[i], "--wav")) g_wav_path = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--force-mode")) g_force_mode = int(std::strtol(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--name")) settings.player_name = argv[i + 1];
         else if (!std::strcmp(argv[i], "--save")) settings.save = read_file(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--input")) add_input(argv[i + 1]);
@@ -258,6 +273,7 @@ int main(int argc, char** argv) {
             return 4;
         }
         ++blocks;
+        apply_forced_mode(c);
         watch_progress(c);
         if (!g_wav_path.empty() && (blocks & 0xFFFF) == 0) collect_sound();
         if (c.pc == kGameTick && g_dump_ticks.count(g_game_ticks) != 0) {
