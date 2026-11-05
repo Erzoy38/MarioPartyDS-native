@@ -32,7 +32,9 @@ Kennzeichnung: **[gemessen]** stammt aus Werkzeugen dieses Projekts, **[Hypothes
 
 **Funktionierende Spielmechaniken in nativer Form: keine.** Sie laufen nur im Originalcode.
 
-Fehlgeschlagen: Das Erzwingen eines Szenenwechsels durch Löschen des Task-Flags ließ das Spiel hängen. Die Tasten-Eingabe über den Emulator ist noch nicht gebaut (Einstieg: `0x01FFC754` liest `KEYINPUT`).
+Fehlgeschlagen: Das Erzwingen eines Szenenwechsels durch Löschen des Task-Flags ließ das Spiel hängen. Tasten-Eingabe über den Emulator: `tools/press_keys.py` setzt bei `0x01FFC3B8` die Tastenmaske in `r9`; noch ungetestet.
+
+Phase 0, Stand: Git-Repository angelegt (nur lokal, ROM und Spielinhalte ausgeschlossen). `native/` baut mit MSVC 19.50, CMake und Ninja aus den Build Tools eine `MarioPartyDS.exe`, die ein leeres Fenster zeigt und den automatischen Start-Test besteht. Sie enthält **keinen Spielcode**. SDL3 ist noch nicht eingebunden, weil es dafür einen Download braucht.
 
 ## 3. Abhängigkeiten von DS-Hardware [gemessen]
 
@@ -64,12 +66,25 @@ Eingabe-Bedarf der Minispiele nach Flag und Steuerungstext: mindestens 22 mit St
 - `MB_`: DS-Download-Spiel. Eigene Daten `mbgui_dep`, `mbturn`, `mbpause`, Menü `ov088` (Modus `0x89`).
 - Ein Minispiel-Overlay (`ov046`, `mg_302`) enthält `PARENT` und `CHILD`.
 
-**[Hypothese, wichtigste offene Frage]** Die Geräte teilen je Bild ihre Eingaben und rechnen dieselbe Spiellogik parallel. Dann wäre das bereits ein Lockstep-Modell. Der Sprung zu Internet-Spiel wäre ein Austausch der Funkschicht.
+### Ergebnis aus Phase 1, aus dem Code gelesen [gemessen]
 
-**Nicht bekannt:**
-- Welche Bretter und Minispiele der Funkmodus umfasst. Der Text nennt Vierspieler-Party und spezielle Zweispieler-Spiele, möglicherweise nur eine Auswahl.
-- Woher der Code der Empfänger kommt. Eine eigene `.srl`-Datei fand sich in der ROM nicht.
-- Ob jede Instanz wirklich dieselbe Logik rechnet oder nur der Host.
+Das Spiel enthält ein Eingabe-Lockstep:
+
+1. `0x01FFC324` liest Tasten und Touch je Bild und legt sie im eigenen Datensatz ab (`0x020D4700 + 0x98`).
+2. `0x02024D44` ist `WH_StepDataSharing`; der Name steht in seiner Fehlermeldung. Es liefert die geteilten Daten nach `0x020D4798`.
+3. Für vier Spieler (je 0x26 Byte) werden Tasten und Touch in eigene Strukturen ab `0x020CFCD8` (je 0x38 Byte) übertragen.
+4. Liegen keine geteilten Daten vor, gibt die Funktion 0 zurück, und `main` (`0x02003000`) ruft den Spieltakt `0x02016D50` nicht auf.
+
+Die Tabelle für den Download-Start hat Prüfsummen für genau 108 Overlays (`0x020BD408`), und der Code unterscheidet den Start per Download nur an 27 Stellen (`0x027FFC40 == 2`). Es gibt keine eigene Empfänger-Datei in der ROM.
+
+Den Funkzustand (`0x02027110`) fragen 82 Overlays ab: alle 6 Bretter, Party-, Minispiel- und Puzzle-Menüs, 58 von 73 Minispielen. Nicht darunter: 7 der 1xx, 1 der 2xx, 3 der 3xx, 4 von 5 Bossen.
+
+**Folgerung:** Der Austauschpunkt ist klein und klar. Auf dem PC ersetzt eine Funktion `WH_StepDataSharing`, die die Eingaben vom Server holt. Für jede Instanz liegen alle Spieleingaben dann so vor, wie das Spiel sie erwartet. Weil auf dem PC jeder das volle Spiel hat, entfallen außerdem die Speichergrenzen eines Empfänger-DS.
+
+**Noch nicht belegt:**
+- Dass die Instanzen wirklich dieselbe Logik rechnen. Der Code zeigt den Mechanismus, gesehen haben wir ihn nicht laufen. Zufallswerte müssen dabei gleich starten; das ist nicht untersucht.
+- Der Umfang. „Fragt den Zustand ab“ bedeutet nicht „läuft im Funkmodus“; auch Story-Menü und Galerie fragen ihn ab. Nicht abfragende Minispiele können den Zustand über Hilfsfunktionen im Hauptprogramm erhalten.
+- Ob 2 melonDS-Instanzen das testen können. Der Empfängerstart kommt aus der DS-Firmware, die hier nicht vorliegt.
 
 ## 5. Punkte in der Anforderung, die ich klären muss
 

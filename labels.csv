@@ -16,6 +16,18 @@ addr,name,comment
 0x02009C74,load_sprite_gfx,r0 = engine; r1 = palette leaf; r2 = tile leaf; slot numbers returned via r3 and [sp]
 ov001:0x021697A8,load_bg_record,r0 = container slot; r2 = 10-byte record: palette; tiles; map; engine; ...; layer at +7
 ov001:0x02169B74,load_sprite_record,r0 = container slot; r1 = record: tiles; palette; frames; animation
+0x01FFC1E4,update_player_pad,r0 = keys; r1 = pad struct
+0x01FFC324,read_input_frame,returns 0 if no shared input is ready; then main skips the tick
+0x01FFC3B8,input_mask_ready,r9 holds the pressed-key mask here; touch sample at [sp]
+0x02016C20,game_init,called once by main; role inferred
+0x02016D50,game_tick,called by main only when read_input_frame returned nonzero; role inferred
+0x02024D24,wh_get_shared_data,r0 = player; returns that player's shared data
+0x02024D44,wh_step_data_sharing,named in its own error message; r0 = send buffer
+0x02027110,net_state,0 when wireless is off; otherwise WH state plus 1
+0x020BD408,overlay_checksums,20 bytes each for 108 overlays; used on download start
+0x020CFCD8,player_pads,0x38 bytes per player for 4 players
+0x020D4700,shared_input_buffer,4 players at 0x26 bytes each; own record at +0x98
+0x027FFC40,boot_type,2 means started by Download Play
 0x02018584,get_mpd_path,r0 = file index; uses the current language
 0x020187F4,get_message,r0 = (file << 16) | message; returns the text
 0x02098BA0,mpd_path_table,35 path pointers per language
