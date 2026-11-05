@@ -55,6 +55,22 @@ void write_all_dumps(const std::string& path) {
 // --dump-tick N, repeatable: also dumps to <dump>/tickN when game tick N starts.
 std::set<u64> g_dump_ticks;
 
+// --frame-range FROM:TO, repeatable: writes only the picture at each game tick in the range, to
+// <dump>/frames/N.rgba. For finding the frame that matches a screenshot.
+std::vector<std::pair<u64, u64>> g_frame_ranges;
+
+void write_frame_if_wanted(const std::string& dump, u64 tick) {
+    for (const auto& [from, to] : g_frame_ranges) {
+        if (tick < from || tick > to) continue;
+        const std::filesystem::path folder = std::filesystem::path(dump) / "frames";
+        std::filesystem::create_directories(folder);
+        std::ofstream picture(folder / (std::to_string(tick) + ".rgba"), std::ios::binary);
+        picture.write(reinterpret_cast<const char*>(ppu_frame()),
+                      std::streamsize(kScreenWidth) * kScreenHeight * 2 * 4);
+        return;
+    }
+}
+
 // Sampled block addresses, to show where a stuck run spends its time.
 std::map<u32, u32> g_hot;
 
@@ -179,6 +195,10 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--max-blocks")) max_blocks = std::strtoull(argv[i + 1], nullptr, 0);
         else if (!std::strcmp(argv[i], "--watch")) g_watched[u32(std::strtoul(argv[i + 1], nullptr, 0))] = 0;
         else if (!std::strcmp(argv[i], "--dump-tick")) g_dump_ticks.insert(std::strtoull(argv[i + 1], nullptr, 0));
+        else if (!std::strcmp(argv[i], "--frame-range")) {
+            unsigned long long from = 0, to = 0;
+            if (std::sscanf(argv[i + 1], "%llu:%llu", &from, &to) == 2) g_frame_ranges.push_back({from, to});
+        }
         else if (!std::strcmp(argv[i], "--name")) settings.player_name = argv[i + 1];
         else if (!std::strcmp(argv[i], "--save")) settings.save = read_file(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--input")) add_input(argv[i + 1]);
@@ -210,6 +230,7 @@ int main(int argc, char** argv) {
             write_all_dumps(dump + "/tick" + std::to_string(g_game_ticks));
             std::printf("dumped at game tick %llu\n", static_cast<unsigned long long>(g_game_ticks));
         }
+        if (c.pc == kGameTick) write_frame_if_wanted(dump, g_game_ticks);
         if ((blocks & 0xFFF) == 0) ++g_hot[c.pc];
         machine_step();
     }

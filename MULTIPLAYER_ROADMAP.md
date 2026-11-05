@@ -192,7 +192,7 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 | 1 | **Funkmodus untersuchen:** Datenfluss und Einstieg gelesen, Puffer im Betrieb gesehen, Entscheidung N1 getroffen. **Offen:** Liste der Bretter und Minispiele im Netz, echter Austausch | Teilweise erreicht, siehe Abschnitt 4 |
 | 2 | Rekompilierer und minimale Laufzeit, Vergleich gegen melonDS. **Erreicht** (siehe unten) | Start bis `main`: Register und RAM gleich |
 | 3 | Code-Abdeckung, Interrupts, Task-System, Overlays. **Erreicht mit Einschränkungen** (siehe unten) | Headless bis ins Hauptmenü, RAM-Abgleich über Hunderte Bilder |
-| 4 | 2D-Darstellung, Eingabe, Dateien, Spielstand | Titel und Menüs bedienbar; pixelweiser Vergleich |
+| 4 | 2D-Darstellung, Eingabe, Dateien, Spielstand. **Erreicht mit Einschränkungen** (siehe unten) | Titel und Menüs bedienbar; pixelweiser Vergleich |
 | 5 | 3D | Brett und Figuren wie im Emulator |
 | 6 | Sound | Musik und Effekte im Vergleich hörbar |
 | 7 | Lokale Vollständigkeit | Eine Party lokal von Anfang bis Ende; Minispiel-Matrix lokal |
@@ -242,6 +242,30 @@ Der ARM7-Ersatz bedient die PXI-Kanäle 5 (Uhr), 6 (Touch), 7 (Sound), 8 (Strom 
 - Noch nicht aufgerufener Code kann weiter an fehlenden Einsprüngen stoppen; `tools/recomp_loop.ps1` fängt das ab. Thumb-Sprungtabellen werden nicht verfolgt.
 - Das Hauptmenü wurde nur im nativen Lauf per Szenennummer erreicht und dort nicht mit melonDS verglichen.
 - Die Wiederholbarkeit ist nur auf einem Rechner und in einem Lauf bis Tick 2000 geprüft.
+
+### Ergebnis Phase 4 [gemessen, gegen Fensterbilder aus melonDS]
+
+`MarioPartyDS.exe` zeigt das Spiel in einem SDL3-Fenster (SDL 3.4.20, liegt nur lokal unter `native/third_party/`). Der Spielkern liegt in `native/runtime/machine.cpp`, der 2D-Renderer in `ppu.cpp`.
+
+| Bildvergleich, je alle 98.304 Pixel | Ergebnis |
+|---|---|
+| Titelbild beim Einfahren (nativ Tick 200) | 100 % gleich |
+| Spielstand-Auswahl ohne Zeiger (nativ Tick 895) | 100 % gleich |
+| Spielstand-Auswahl mit Zeiger auf 1 (nativ Tick 1333) | 100 % gleich |
+| Hauptmenü (nativ Tick 1467) | 100 % gleich |
+
+**Methode:** Die Läufe sind zeitlich versetzt, deshalb sucht `tools/find_matching_frame.py` das passende Bild in einem Bereich nativer Bilder. Geprüft ist damit, dass der Renderer dieses Bild erzeugen kann, nicht dass es zum selben Zeitpunkt erscheint. Nur vier Standbilder, die Bildfolge über die Zeit ist nicht verglichen.
+
+**Über echte Fensterereignisse getestet:** Tastatur auf dem Titel, Mausklick auf den Titel, Anlegen der Spielstand-Datei auf leerem Speicher (8192 Byte, „Data has been created“) und Lesen beim nächsten Start.
+
+**Grenzen:**
+- Controller, `F10` und `F11` sind eingebaut, aber ungetestet. Der Controller-Zeiger für den Touchscreen ebenfalls.
+- Nicht pixelweise verglichen: Logos, „Touch to Start“, Intro, alle Bildschirme hinter dem Hauptmenü. Viele Renderer-Funktionen (Rotation, Bitmap-Sprites, Fenster, Mosaik) sind damit vermutlich unbelegt.
+- Ein Spielprofil anlegen, Fortschritt speichern und wieder laden ist nicht getestet.
+- 3D und Display-Capture werden nicht gezeichnet, Ton fehlt. Auf dem Weg ins Hauptmenü kommen 3D und Capture laut Zähler nicht vor.
+- Tastenbelegung fest eingebaut, die Einstellungen fehlen noch.
+- Tempo knapp: 600 Bilder in rund 11 s samt Start, Soll rund 10 s. Der Spielcode ist ohne Optimierung gebaut.
+- Offen: In melonDS erschien nach längerem Warten im Hauptmenü ein Bildschirm „Touch the Screen“ mit Sternenhimmel, und gleichzeitig brach die Stub-Verbindung ab. Ob beides zusammenhängt, ist nicht untersucht.
 
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 
