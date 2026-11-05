@@ -1,0 +1,35 @@
+# Game content: never commit. The ROM, saves and everything extracted from them stay local.
+*.nds
+*.sav
+*.dsv
+unpacked/
+gfx/
+web/
+
+# Data generated from the ROM by tools/. Reproducible, and may hold game text or code bytes.
+assets.csv
+bg_tables.csv
+bg_tables_generic.csv
+file_refs.csv
+functions.csv
+gfx_screens.csv
+gfx_sprites.csv
+leaf_index.csv
+minigames.csv
+MINISPIELE.md
+modes.csv
+nds_files.csv
+nds_overlays.csv
+overlay_files.csv
+overlay_trace.csv
+scenes.csv
+sprite_tables.csv
+sprite_tables_loose.csv
+trace_loads.csv
+trace_pairs.csv
+unpack_report.csv
+
+# Build output and caches
+native/build/
+__pycache__/
+*.pyc

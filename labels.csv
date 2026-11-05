@@ -1,0 +1,55 @@
+addr,name,comment
+0x02000800,arm9_entry,ARM9 entry point from header
+0x0200093C,mem_fill,assumed from call sites: r0 value; r1 dest; r2 size
+0x02000950,blz_decompress,game's own BLZ unpacker; r0 = end of compressed data
+0x020009FC,autoload_copy,copies autoload data and clears its bss
+0x02000A74,arm9_autoload_callback,header field 0x70; empty function (bx lr)
+0x02000A78,cp15_init,sets protection regions; caches; ITCM and DTCM
+0x02003000,main,startup code branches here; contains the endless main loop
+0x020069E4,unpack_data,r0 = data; r1 = mode; used before tile data with a compression type
+0x0200724C,load_palette,r0 = engine; r1 = palette leaf; r2 = offset
+0x020072E4,load_tiles,r0 = engine; r1 = layer; r2 = tile leaf; r3 = offset
+0x020074B0,load_map,r0 = engine; r1 = layer; r2 = map leaf
+0x0200968C,load_file,r0 = path
+0x02009994,get_member,r0 = container; r1 = index; returns the member address
+0x02009A38,load_bg,r0 = engine; r1 = layer; r2 = palette; r3 = tiles; [sp] = map
+0x02009C74,load_sprite_gfx,r0 = engine; r1 = palette leaf; r2 = tile leaf; slot numbers returned via r3 and [sp]
+ov001:0x021697A8,load_bg_record,r0 = container slot; r2 = 10-byte record: palette; tiles; map; engine; ...; layer at +7
+ov001:0x02169B74,load_sprite_record,r0 = container slot; r1 = record: tiles; palette; frames; animation
+0x02018584,get_mpd_path,r0 = file index; uses the current language
+0x020187F4,get_message,r0 = (file << 16) | message; returns the text
+0x02098BA0,mpd_path_table,35 path pointers per language
+0x020A216C,minigame_table,24-byte records indexed by scene; 78 entries
+0x0202A060,get_minigame,r0 = scene; returns the record
+0x0201A3AC,set_next_mode,r0 = mode; stores to mode_state+0xD
+0x0201A3FC,scene_of_mode,r0 = mode; returns scene or -1 below mode 0x2C
+0x0201A420,scene_setup_task,task body; runs phase 1 of the current scene
+0x0201A448,scene_manager,endless loop that switches game modes
+0x0201CF44,scene_slot,r0 = scene; returns 1 for scene >= 78 else 0
+0x0201CFD0,load_scene,r0 = scene; loads its overlay unless the slot is occupied
+0x0201D024,unload_scene,r0 = scene
+0x0201D088,run_scene_phase,r0 = scene; r1 = phase
+0x02065294,irq_disable,sets the I bit; returns the old value
+0x020652A8,irq_restore,r0 = value from irq_disable
+0x02069564,load_overlay_info,r0 = info; r1 = cpu; r2 = id
+0x02069660,read_overlay_image,r0 = info
+0x02069784,start_overlay,r0 = info; checks; unpacks; runs static init
+0x02069878,run_unload_callbacks,r0 = info; callback list at 0x02163880
+0x02069978,load_overlay,r0 = cpu; r1 = id
+0x020699CC,unload_overlay,r0 = cpu; r1 = id
+0x02099B18,scene_by_mode,s16 per mode from 0x2C
+0x02099BFC,mode_entry_table,u32 entry function per mode
+0x02099EE8,scene_overlay,u32 overlay id per scene
+0x0209A0AC,scene_funcs,3 u32 per scene: phases 0; 1; 2
+0x020C9660,mode_state,scene and mode bytes used by scene_manager
+0x020CEFB4,slot_scene,s16 loaded scene per slot
+0x02000B68,arm9_module_params,assumes the first 0x4000 bytes load unchanged
+0x020BDC80,arm9_static_bss_start,also autoload_start in module params
+0x020C2F40,arm9_autoload_list,from module params
+0x020C2F58,arm9_autoload_list_end,equals end of decompressed ARM9 image
+0x021638A0,overlay_slot_1,load address of 74 overlays; equals static_bss_end
+0x021838A0,overlay_slot_2,load address of 34 overlays
+0x01FF8000,autoload_itcm,autoload target size 0x5220; inside ITCM per CP15 setup
+0x027E0000,dtcm_base,autoload target size 0xA0 plus bss 0x220; DTCM base per CP15 setup
+0x02380000,arm7_entry,ARM7 entry point and load address
+0x02380158,arm7_autoload_callback,header field 0x74; role not traced yet
