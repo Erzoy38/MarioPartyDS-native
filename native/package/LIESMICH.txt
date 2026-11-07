@@ -1,0 +1,48 @@
+Mario Party DS für Windows
+==========================
+
+Dieses Paket enthält das Programm, aber nicht das Spiel selbst. Jeder Spieler braucht seine eigene
+ROM-Datei von Mario Party DS (Europa, Rev 1, Datei mit der Endung .nds). Die ROM gehört nicht in
+dieses Paket und wird nicht weitergegeben.
+
+Inhalt
+------
+MarioPartyDS.exe          das Spiel
+SDL3.dll                  Fenster, Ton und Controller (gehört neben die Exe)
+MarioPartyDS-server.exe   der Server, nur für den Host einer Online-Partie
+ONLINE.txt                Anleitung für das Spielen über das Internet
+SDL3-LICENSE.txt          Lizenz von SDL3
+
+Weitergeben
+-----------
+Nur die ZIP-Datei weitergeben, nicht den eigenen Ordner. Wer den Server einmal gestartet hat, hat
+dort die Datei MarioPartyDS-server.key: der geheime Schlüssel des Servers. Mit ihr könnte sich ein
+anderer als dieser Server ausgeben. Sie bleibt beim Host.
+
+Erster Start
+------------
+1. Den Ordner irgendwohin entpacken, zum Beispiel auf den Desktop.
+2. MarioPartyDS.exe starten. Beim ersten Mal fragt das Programm nach der ROM-Datei.
+3. Windows zeigt bei unbekannten Programmen eventuell „Der Computer wurde durch Windows geschützt“.
+   Dann „Weitere Informationen“ und „Trotzdem ausführen“ wählen, wenn das Paket vom Host stammt.
+4. Unter „Einstellungen“ den eigenen Namen und die Server-Adresse eintragen, die der Host nennt.
+
+Spielstand, Einstellungen und Protokoll liegen unter %APPDATA%\MarioPartyDS\MarioPartyDS\.
+
+Tasten
+------
+Pfeiltasten       Steuerkreuz
+X / Z             A / B
+S / A             X / Y
+Q / W             L / R
+Enter             Start
+Umschalt rechts   Select
+Maus              Touchscreen (unterer Bildschirm, linke Maustaste)
+Leertaste         ins Mikrofon pusten
+F10               Fenstergröße
+F11               Vollbild
+Esc               Zurück zum Hauptmenü
+
+Controller (wird erkannt, sobald er angeschlossen ist): Tasten wie beim DS (A rechts, B unten,
+X oben, Y links), Schultertasten L/R, Start, Back = Select. Der rechte Stick bewegt einen Zeiger
+auf dem Touchscreen; Drücken des rechten Sticks oder der rechte Trigger tippt. Linker Trigger: ins Mikrofon pusten.

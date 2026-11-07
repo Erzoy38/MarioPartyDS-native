@@ -36,3 +36,6 @@ run/
 __pycache__/
 *.pyc
 native/third_party/
+
+# The package for other players: holds the programs with translated game code.
+dist/

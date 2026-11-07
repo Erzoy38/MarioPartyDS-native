@@ -4,6 +4,9 @@ project(MarioPartyDS LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# The C++ runtime is linked into the programs, so they run on PCs without the Visual C++
+# Redistributable; next to MarioPartyDS.exe only SDL3.dll is needed.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # native/generated/ comes from tools/recomp.py and holds translated game code, so it is never
 # committed. SDL3 is the unpacked SDL3-devel-*-VC.zip in native/third_party/SDL3.

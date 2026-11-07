@@ -560,7 +560,12 @@ Nach den Korrekturen liefen die Spiele beim nächsten Lauf durch.
 
 **Offen für das Ziel der Phase:**
 - **Echter Test:** 4 PCs an verschiedenen Orten. Dafür braucht es den Nutzer und drei Mitspieler, außerdem die Firewall-Freigabe und die Portweiterleitung am Router des Hosts.
-- **Weitergabe (Entscheidung 3):** Wie bekommen die anderen das Programm? `MarioPartyDS.exe` enthält den übersetzten Spielcode.
+- **Weitergabe:** entschieden (Abschnitt 11): Der Nutzer gibt das Paket weiter.
+  - `tools/make_package.py` legt `dist/MarioPartyDS.zip` an (26 MB): Exe, `SDL3.dll`, Server, `LIESMICH.txt`, `ONLINE.txt` und die SDL-Lizenz.
+  - Nicht im Paket: ROM, Spielstand, Serverschlüssel, Einstellungen. Das Skript bricht ab, wenn eine solche Datei unter den Quellen ist.
+  - Die C++-Laufzeit ist fest eingebunden. Neben der Exe braucht es nur noch `SDL3.dll`; alle anderen DLLs gehören zu Windows (geprüft mit `dumpbin /dependents`).
+  - Getestet: aus einem leeren Ordner entpackt, bis zum Titelbild gelaufen. Der Server aus dem Paket legt beim ersten Start seinen Schlüssel an, und ein Client kommt verschlüsselt durch.
+  - Nicht getestet: ein PC ohne Visual Studio. Dieser PC hat die Laufzeit installiert; dass sie nicht gebraucht wird, zeigt nur die DLL-Liste.
 - Nicht selbst geprüft: Start eines neuen Serverfensters über den Knopf. Der Server würde dann auf allen Adressen lauschen, und Windows fragt nach der Firewall; im Test lief der Server deshalb schon und wurde nur gefunden. Vollbild (F11, Einstellung) ist unverändert seit Phase 10.
 
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
@@ -595,5 +600,5 @@ Nach den Korrekturen liefen die Spiele beim nächsten Lauf durch.
 
 1. Architektur B mit N1: **entschieden** (Phase 1).
 2. Server: **entschieden am 05.11.2026: auf dem PC des Nutzers.** Folgen: Der Server läuft nur, solange dieser PC an ist. Die anderen erreichen ihn über die öffentliche Adresse des Anschlusses; dafür braucht es eine Portweiterleitung im Router (TCP 47000; das Spiel nutzt TCP, siehe Phase 8), oder UPnP, falls der Router es erlaubt. Bei wechselnder öffentlicher Adresse braucht es einen dynamischen DNS-Namen oder einen neuen Einladungscode. Der Lobby-Dienst kann im selben Programm laufen.
-3. Weitergabe: Wie kommen die anderen drei Spieler an die Exe, und hat jeder eine eigene ROM? **Offen.**
+3. Weitergabe: **entschieden am 07.11.2026: Der Nutzer gibt die fertige Exe weiter**, auf eigenes Risiko (die Exe enthält übersetzten Spielcode). Jeder Mitspieler nimmt seine eigene ROM; sie ist nicht im Paket. Paket: `python tools/make_package.py` → `dist/MarioPartyDS.zip`.
 4. Git-Repository: **angelegt**, nur lokal.
