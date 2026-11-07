@@ -241,6 +241,7 @@ void on_network_wait() {
         }
     }
     update_online_title();
+    std::fflush(stdout);
     std::string first, second;
     net_wait_text(first, second);
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
@@ -496,6 +497,7 @@ int main(int argc, char** argv) {
 
         machine_run_frame();
         ++frames;
+        std::fflush(stdout);  // the log stays complete if the program ends unexpectedly
         if (online) update_online_title();
         // Back in a game: the game so far is played again as fast as it goes, with a note now and then.
         if (online && net_catching_up()) {
