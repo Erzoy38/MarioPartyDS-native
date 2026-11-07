@@ -197,7 +197,7 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 | 6 | Sound. **Erreicht mit Einschränkungen** (siehe unten) | Musik und Effekte im Vergleich hörbar |
 | 7 | Lokale Vollständigkeit. **Erreicht mit Einschränkungen** (siehe unten) | Eine Party lokal von Anfang bis Ende; Minispiel-Matrix lokal |
 | 8 | Netz im eigenen Rechner: Lockstep, Server headless | 4 Prozesse lokal, Prüfsummen gleich über eine ganze Partie |
-| 9 | Minispiele einzeln online, Matrix mit 73 Zeilen | Jedes Spiel gestartet, gespielt, Ergebnis gleich bei allen; Grenzen dokumentiert |
+| 9 | Minispiele einzeln online, Matrix mit 73 Zeilen. **Erreicht mit Einschränkungen** (siehe unten) | Jedes Spiel gestartet, gespielt, Ergebnis gleich bei allen; Grenzen dokumentiert |
 | 10 | Lobby, Codes, Charakterwahl, Oberfläche | Ablauf von Raum bis Start in 4 Prozessen |
 | 11 | Abbrüche, Wiedereintritt, Serverneustart, Verzögerung, Ping | Netzsimulator-Tests bestanden |
 | 12 | Internet: Server betreiben, Verschlüsselung, Einstellungen, Vollbild | 4 echte PCs an verschiedenen Standorten spielen eine Party |
@@ -390,6 +390,42 @@ Der ARM7-Ersatz bedient die PXI-Kanäle 5 (Uhr), 6 (Touch), 7 (Sound), 8 (Strom 
 - Zweimal blieben Gäste früh über 20 s stehen; danach nicht wieder auslösbar. Ursache offen.
 - Eingaben nur gescriptet (A und Touch alle 45 Ticks). Minispiele wurden nicht gezielt gespielt.
 - Gast-Spielernummern entstehen aus der Reihenfolge des Verbindens und sind nicht fest.
+
+### Ergebnis Phase 9 [gemessen, 4 bzw. 2 Prozesse auf einem PC, TCP über localhost]
+
+**Aufbau (`tools/net_minigame_matrix.py`):** Je Minispiel ein Host und drei Gäste als eigene Prozesse, jedes Spiel mit eigenem Port. Der Host geht über das echte Menü (Free Play, Tab und Eintrag), die Gäste wählen Luigi, Peach und Yoshi. Puzzles laufen über den Puzzle-Modus mit einem Gast. Danach drücken alle Spieler gescriptet Tasten und tippen auf den Touchscreen, jeder mit anderem Muster. Fehlender Code wird in Runden nachgetragen, bis kein Spiel mehr welchen meldet. Ergebnis in `run/netmatrix_all.csv` (nicht im Repository, enthält Spieltitel).
+
+„Gleich“ heißt hier: Alle Spieler betreten das Minispiel im selben Austauschschritt und verlassen es im selben Schritt, keiner bricht ab.
+
+| Gruppe | Zeilen | Gleich bei allen |
+|---|---|---|
+| 4-Player (Free Play) | 32 | 32 |
+| 1-vs-3 | 12 | 12 |
+| 2-vs-2 | 13 | 13 |
+| Battle | 5 | 5 |
+| Puzzles (2 Spieler) | 5 | 5 |
+| Bosse (501 bis 505) | 5 | nicht angeboten |
+| Triangle Twisters (606) | 1 | gesperrt |
+| **Summe** | **73** | **67 von 67 angebotenen** |
+
+**Weitere Befunde:**
+- Spieldauer 1.071 bis 19.174 Schritte, Median 3.045.
+- Endbilder: 40 Spiele pixelgleich bei allen. Bei den übrigen zeigt jeder Spieler seine eigene Ansicht: eigene Farbe, eigenes Fahrzeug, vertauschte Bildschirme beim Einzelspieler in 1-vs-3. Bei 9 Spielen habe ich die Bilder angesehen. Spielstand, Zeiten und Siegertext waren gleich.
+- 24 Codestellen kamen nach, vor allem aus Overlay 62.
+
+**Fehlschläge, alle im Testaufbau, nicht im Spiel:**
+- Gleiche Ports bei gleichzeitigen Läufen.
+- Zu knappes Rechenbudget für den Host.
+- Zu kurze Spielzeit: Mario's Puzzle Party endet erst, wenn ein Stapel voll ist, also nur solange gedrückt wird.
+
+Nach den Korrekturen liefen die Spiele beim nächsten Lauf durch.
+
+**Grenzen:**
+- Bosse kommen in keinem Mehrspielermenü vor. Triangle Twisters erscheint als „??????“ und braucht einen Fortschritt, den der Testspielstand nicht hat.
+- Die Free-Play-Spiele sind nur über `--unlock-minigames` (Hilfsmittel im Test, setzt die Bits ab `0x021547B8`) alle wählbar. Ohne das zeigt der Spielstand nur die gespielten.
+- Eingaben gescriptet, nichts gezielt gespielt. Ob jedes Spiel mit echten Spielern richtig zu bedienen ist, ist nicht geprüft. Pustespiele haben im Netz nur „pusten oder nicht“.
+- Gleichheit nur über Schritte und Bilder. Der Hauptspeicher wurde nicht je Spiel verglichen.
+- Weiter nur ein Rechner, kein echtes Netz.
 
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 

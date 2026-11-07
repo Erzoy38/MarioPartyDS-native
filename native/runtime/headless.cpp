@@ -249,6 +249,56 @@ void apply_forced_mode(Cpu& c) {
     }
 }
 
+// --unlock-minigames N: marks minigames 0..N-1 as played in memory, every tick, so Free Play lists
+// them all. The list is a bit field in the save block (0x021547B8, read by 0x0204AE0C, set by
+// 0x0204ADC0). A test aid: the save file is not written, and a real save would carry the bits.
+int g_unlock_minigames = 0;
+constexpr u32 kPlayedMinigames = 0x021547B8;
+
+void apply_unlock(const Cpu& c) {
+    if (g_unlock_minigames <= 0 || c.pc != kGameTick) return;
+    for (int i = 0; i < g_unlock_minigames && i < 80; ++i) {
+        const u32 address = kPlayedMinigames + u32(i / 8);
+        wr8(address, u8(rd8(address) | (1u << (i % 8))));
+    }
+}
+
+// --exit-frames FOLDER: in a network run, keeps the picture of each of the last 128 exchange steps and,
+// when a minigame scene (1 to 77) ends at step S, writes the pictures of steps S-60 and S-120 as
+// exit<scene>_step<N>.rgba. Every player writes the same steps, so their winner screens compare.
+std::string g_exit_frames;
+constexpr u32 kFrameRing = 128;
+constexpr std::size_t kFrameBytes = std::size_t(kScreenWidth) * kScreenHeight * 2 * 4;
+std::vector<std::vector<u8>> g_frame_ring;
+
+void keep_step_frame(u64 step) {
+    if (g_exit_frames.empty()) return;
+    if (g_frame_ring.empty()) g_frame_ring.assign(kFrameRing, std::vector<u8>(kFrameBytes));
+    std::memcpy(g_frame_ring[step % kFrameRing].data(), ppu_frame(), kFrameBytes);
+}
+
+// --end-after-minigame 1: the run ends when the first minigame scene ends.
+bool g_end_after_minigame = false;
+bool g_minigame_ended = false;
+u64 g_minigame_end_step = 0;  // the others still need steps from this player to see the end too
+
+void save_exit_frames(s16 previous, s16 scene) {
+    if (previous >= 1 && previous <= 77 && scene != previous && !g_minigame_ended) {
+        g_minigame_ended = true;
+        g_minigame_end_step = net_stats().steps;
+    }
+    if (g_exit_frames.empty() || previous < 1 || previous > 77 || scene == previous) return;
+    const u64 step = net_stats().steps;
+    std::filesystem::create_directories(g_exit_frames);
+    for (u64 back : {60ull, 120ull}) {
+        if (step < back) continue;
+        const std::string name = "exit" + std::to_string(previous) + "_step" + std::to_string(step - back) + ".rgba";
+        std::ofstream out(std::filesystem::path(g_exit_frames) / name, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(g_frame_ring[(step - back) % kFrameRing].data()),
+                  std::streamsize(kFrameBytes));
+    }
+}
+
 void watch_progress(const Cpu& c) {
     static s16 last_scene = -1;
     if (c.pc == kGameTick) apply_script(g_game_ticks + 1);
@@ -261,10 +311,12 @@ void watch_progress(const Cpu& c) {
     if (c.pc == kGameTick) ++g_game_ticks;
     const s16 scene = s16(rd16(kModeState));
     if (scene != last_scene) {
+        const s16 previous = last_scene;
         last_scene = scene;
         ++g_scene_changes;
-        std::printf("scene %d at game tick %llu\n", scene,
-                    static_cast<unsigned long long>(g_game_ticks));
+        std::printf("scene %d at game tick %llu, step %llu\n", scene, static_cast<unsigned long long>(g_game_ticks),
+                    static_cast<unsigned long long>(net_stats().steps));
+        save_exit_frames(previous, scene);
     }
 }
 
@@ -296,6 +348,9 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--net-host")) { net.role = NetRole::Host; net.port = u16(std::atoi(argv[i + 1])); }
         else if (!std::strcmp(argv[i], "--net-guest")) { net.role = NetRole::Guest; net.port = u16(std::atoi(argv[i + 1])); }
         else if (!std::strcmp(argv[i], "--force-mode")) g_force_mode = int(std::strtol(argv[i + 1], nullptr, 0));
+        else if (!std::strcmp(argv[i], "--end-after-minigame")) g_end_after_minigame = std::atoi(argv[i + 1]) != 0;
+        else if (!std::strcmp(argv[i], "--exit-frames")) g_exit_frames = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--unlock-minigames")) g_unlock_minigames = std::atoi(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--name")) settings.player_name = argv[i + 1];
         else if (!std::strcmp(argv[i], "--boot-type")) settings.boot_type = u16(std::strtoul(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--save")) settings.save = read_file(argv[i + 1]);
@@ -356,13 +411,22 @@ int main(int argc, char** argv) {
             print_hot_blocks();
             return 4;
         }
+        if (g_end_after_minigame && g_minigame_ended && net_stats().steps >= g_minigame_end_step + 120) {
+            std::printf("minigame ended at step %llu\n", static_cast<unsigned long long>(net_stats().steps));
+            std::printf("net: %llu steps, %llu blocks, %u players, last checksum %08x\n",
+                        static_cast<unsigned long long>(net_stats().steps), static_cast<unsigned long long>(net_stats().blocks),
+                        net_stats().players, net_stats().checksum);
+            return 0;
+        }
         ++blocks;
         apply_forced_mode(c);
+        apply_unlock(c);
         watch_progress(c);
         if (!g_wav_path.empty() && (blocks & 0xFFFF) == 0) collect_sound();
         // Once per tick: while the CPU waits for an interrupt, pc stays at the tick start.
         if (net_stats().steps != last_seen_step) {
             last_seen_step = net_stats().steps;
+            keep_step_frame(last_seen_step);
             if (g_dump_steps.count(last_seen_step) != 0) {
                 write_all_dumps(dump + "/step" + std::to_string(last_seen_step));
                 std::printf("dumped at step %llu, game tick %llu\n", static_cast<unsigned long long>(last_seen_step),

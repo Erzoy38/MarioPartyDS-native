@@ -391,13 +391,14 @@ bool wh_hook(Cpu& c) {
     }
 }
 
-void store_step(const std::vector<u8>& records, u16 bitmap) {
+// `step` is the host's step number, so all players count alike (the host may step alone first).
+void store_step(const std::vector<u8>& records, u16 bitmap, u64 step) {
     for (u32 i = 0; i < 4 * kRecordSize; ++i) wr8(kSharedRecords + i, records[i]);
     set_bitmap(bitmap);
     u32 sum = 0x811C9DC5u;
     for (u8 b : records) sum = (sum ^ b) * 0x01000193u;
     g_stats.checksum = sum;
-    ++g_stats.steps;
+    g_stats.steps = step;
 }
 
 // The exchange: every connected player's record of this step, the same for everybody.
@@ -423,13 +424,15 @@ bool step_hook(Cpu& c) {
             std::copy(guest.records.front().begin(), guest.records.front().end(), records.begin() + aid * kRecordSize);
             guest.records.pop_front();
         }
-        std::vector<u8> packet(2 + records.size());
+        const u64 step = g_stats.steps + 1;
+        std::vector<u8> packet(10 + records.size());
         std::memcpy(packet.data(), &bitmap, 2);
-        std::copy(records.begin(), records.end(), packet.begin() + 2);
+        std::memcpy(packet.data() + 2, &step, 8);
+        std::copy(records.begin(), records.end(), packet.begin() + 10);
         for (auto& [aid, guest] : g_guests) {
             if (guest.connected) send_message(guest.socket, kStep, packet);
         }
-        store_step(records, bitmap);
+        store_step(records, bitmap, step);
     } else {
         send_message(g_host, kRecord, own);
         for (;;) {
@@ -443,7 +446,9 @@ bool step_hook(Cpu& c) {
             if (type == kStep) {
                 u16 bitmap;
                 std::memcpy(&bitmap, body.data(), 2);
-                store_step(std::vector<u8>(body.begin() + 2, body.end()), bitmap);
+                u64 step;
+                std::memcpy(&step, body.data() + 2, 8);
+                store_step(std::vector<u8>(body.begin() + 10, body.end()), bitmap, step);
                 break;
             }
         }
