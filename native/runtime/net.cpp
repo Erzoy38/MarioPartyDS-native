@@ -132,7 +132,13 @@ void call_game(u32 address, u32 r0, u32 r1, u32 r2) {
     c.r[14] = kReturnMark;
     c.pc = address;
     c.thumb = 0;
-    while (c.pc != kReturnMark) machine_step();
+    for (u64 n = 1; c.pc != kReturnMark; ++n) {
+        machine_step();
+        if ((n & 0x3FFFFFF) == 0) {
+            std::printf("net: call of %08x still running after %llu blocks: pc=%08x lr=%08x cpsr=%08x\n", address,
+                        static_cast<unsigned long long>(n), c.pc, c.r[14], c.cpsr());
+        }
+    }
     const Cpu after = c;
     c = saved;
     (void)after;

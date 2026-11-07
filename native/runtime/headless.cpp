@@ -2,7 +2,7 @@
 // comparison. Reads the player's ROM at run time; nothing from it is built into this file.
 //
 // Usage: MarioPartyDS-headless <rom.nds> --stop 0x02003000 --dump <folder> [--max-blocks N]
-//        [--dump-tick N]... [--watch ADDR]... [--name NAME] [--save FILE (read only)]
+//        [--dump-tick N]... [--dump-step N]... [--watch ADDR]... [--name NAME] [--save FILE (read only)]
 //        [--input TICK:WHAT[:FRAMES]]...
 #define _CRT_SECURE_NO_WARNINGS  // sscanf reads the command line here, with field widths
 #include "cpu.h"
@@ -15,6 +15,7 @@
 #include "sound.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -80,6 +81,9 @@ void write_wav() {
 
 // --dump-tick N, repeatable: also dumps to <dump>/tickN when game tick N starts.
 std::set<u64> g_dump_ticks;
+// --dump-step N, repeatable: dumps to <dump>/stepN right after exchange step N. Network players are
+// at the same point of the game there, while their tick counts can differ.
+std::set<u64> g_dump_steps;
 
 // --frame-range FROM:TO, repeatable: writes only the picture at each game tick in the range, to
 // <dump>/frames/N.rgba. For finding the frame that matches a screenshot.
@@ -99,6 +103,42 @@ void write_frame_if_wanted(const std::string& dump, u64 tick) {
 
 // Sampled block addresses, to show where a stuck run spends its time.
 std::map<u32, u32> g_hot;
+
+// In a network run, a player that stops taking part blocks everybody. Shows where this one is when
+// no exchange step has come for 10 s (once per stall).
+std::map<u32, u32> g_stall_hot;
+void watch_network_stall(const Cpu& c, u64 blocks) {
+    static u64 last_steps = ~0ull;
+    static auto last_change = std::chrono::steady_clock::now();
+    static bool reported = false;
+    if ((blocks & 0xFFF) == 0) ++g_stall_hot[c.pc];
+    if ((blocks & 0xFFFFF) != 0) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (net_stats().steps != last_steps) {
+        last_steps = net_stats().steps;
+        last_change = now;
+        reported = false;
+        g_stall_hot.clear();
+        return;
+    }
+    if (reported || now - last_change < std::chrono::seconds(10)) return;
+    reported = true;
+    std::printf("STALL: no exchange step for 10 s after step %llu, pc=%08x lr=%08x sp=%08x cpsr=%08x halted %d\n",
+                static_cast<unsigned long long>(last_steps), c.pc, c.r[14], c.r[13], c.cpsr(), g_hw.halted);
+    std::printf("STALL stack:");
+    for (u32 i = 0, shown = 0; i < 128 && shown < 12; ++i) {
+        const u32 value = rd32(c.r[13] + i * 4);
+        if (value >= 0x02000000 && value < 0x021A5000 && (value & 3) == 0) {
+            std::printf(" %08x", value);
+            ++shown;
+        }
+    }
+    std::printf("\nSTALL blocks:");
+    std::vector<std::pair<u32, u32>> hot(g_stall_hot.begin(), g_stall_hot.end());
+    std::sort(hot.begin(), hot.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (std::size_t i = 0; i < hot.size() && i < 12; ++i) std::printf(" %08x(%u)", hot[i].first, hot[i].second);
+    std::printf("\n");
+}
 
 void print_hot_blocks() {
     std::vector<std::pair<u32, u32>> hits;
@@ -247,6 +287,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--max-blocks")) max_blocks = std::strtoull(argv[i + 1], nullptr, 0);
         else if (!std::strcmp(argv[i], "--watch")) g_watched[u32(std::strtoul(argv[i + 1], nullptr, 0))] = 0;
         else if (!std::strcmp(argv[i], "--dump-tick")) g_dump_ticks.insert(std::strtoull(argv[i + 1], nullptr, 0));
+        else if (!std::strcmp(argv[i], "--dump-step")) g_dump_steps.insert(std::strtoull(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--frame-range")) {
             unsigned long long from = 0, to = 0;
             if (std::sscanf(argv[i + 1], "%llu:%llu", &from, &to) == 2) g_frame_ranges.push_back({from, to});
@@ -284,10 +325,12 @@ int main(int argc, char** argv) {
     machine_boot(rom, settings);
     net.name = settings.player_name;
     net_start(net);
+    const bool net_running = net.role != NetRole::Off;
 
     Cpu& c = machine_cpu();
     u64 blocks = 0;
     u64 last_dumped_tick = ~0ull;
+    u64 last_seen_step = 0;
     u64 last_frame_tick = ~0ull;
     while (c.pc != stop) {
         if (blocks >= max_blocks) {
@@ -318,6 +361,14 @@ int main(int argc, char** argv) {
         watch_progress(c);
         if (!g_wav_path.empty() && (blocks & 0xFFFF) == 0) collect_sound();
         // Once per tick: while the CPU waits for an interrupt, pc stays at the tick start.
+        if (net_stats().steps != last_seen_step) {
+            last_seen_step = net_stats().steps;
+            if (g_dump_steps.count(last_seen_step) != 0) {
+                write_all_dumps(dump + "/step" + std::to_string(last_seen_step));
+                std::printf("dumped at step %llu, game tick %llu\n", static_cast<unsigned long long>(last_seen_step),
+                            static_cast<unsigned long long>(g_game_ticks));
+            }
+        }
         if (c.pc == kGameTick && g_dump_ticks.count(g_game_ticks) != 0 && g_game_ticks != last_dumped_tick) {
             last_dumped_tick = g_game_ticks;
             write_all_dumps(dump + "/tick" + std::to_string(g_game_ticks));
@@ -329,6 +380,7 @@ int main(int argc, char** argv) {
             write_frame_if_wanted(dump, g_game_ticks);
         }
         if ((blocks & 0xFFF) == 0) ++g_hot[c.pc];
+        if (net_running) watch_network_stall(c, blocks);
         machine_step();
     }
     std::printf("reached stop address, pc=%08x\n", c.pc);
