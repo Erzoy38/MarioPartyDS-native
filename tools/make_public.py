@@ -28,7 +28,11 @@ FILES = [
     (os.path.join("native", "public", "build.ps1"), "build.ps1"),
     (os.path.join("native", "public", "README.md"), "README.md"),
     (os.path.join("native", "public", "gitignore.txt"), ".gitignore"),
+    ("LICENSE", "LICENSE"),
 ]
+# Put at the top of every source file in public/.
+NOTICE = "Copyright (c) 2026 Ersin (GitHub: Erzoy38). Alle Rechte vorbehalten. Siehe LICENSE."
+COMMENT = {".cpp": "// ", ".h": "// ", ".py": "# ", ".ps1": "# "}
 # Game addresses (main RAM, overlays), the unpacked program, ROM and save files.
 FORBIDDEN = re.compile(r"0x0[0-9A-Fa-f]{7}|\bov\d{3}\b|overlay|arm9|arm7|unpacked|\.nds\b|\.sav\b|recomp|"
                        r"generated/|melonDS|headless", re.I)
@@ -62,6 +66,9 @@ def main():
             if old not in text:
                 sys.exit(f"rewrite not found in {source}: {old!r}")
             text = text.replace(old, new)
+        prefix = COMMENT.get(os.path.splitext(target)[1])
+        if prefix:
+            text = prefix + NOTICE + "\n" + text
         for number, line in enumerate(text.split("\n"), start=1):
             if FORBIDDEN.search(line):
                 problems.append(f"{source}:{number}: {line.strip()}")

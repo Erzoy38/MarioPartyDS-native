@@ -20,6 +20,7 @@ FILES = [
     (os.path.join(BUILD, "MarioPartyDS-server.exe"), "MarioPartyDS-server.exe"),
     (os.path.join("native", "package", "LIESMICH.txt"), "LIESMICH.txt"),
     ("ONLINE.md", "ONLINE.txt"),
+    ("LICENSE", "LIZENZ.txt"),
     (os.path.join("native", "third_party", "SDL3", "LICENSE.txt"), "SDL3-LICENSE.txt"),
 ]
 FORBIDDEN = (".nds", ".sav", ".dsv", ".key", ".ini", ".log", ".rejoin")

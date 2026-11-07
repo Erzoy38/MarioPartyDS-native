@@ -1,6 +1,10 @@
 Mario Party DS für Windows
 ==========================
 
+Copyright (c) 2026 Ersin (GitHub: Erzoy38). Alle Rechte vorbehalten. Wer das Paket direkt vom
+Urheber bekommen hat, darf es zum Spielen benutzen. Weitergeben, Verändern oder als eigene Arbeit
+ausgeben ist ohne Erlaubnis nicht gestattet. Einzelheiten in LIZENZ.txt.
+
 Dieses Paket enthält das Programm, aber nicht das Spiel selbst. Jeder Spieler braucht seine eigene
 ROM-Datei von Mario Party DS (Europa, Rev 1, Datei mit der Endung .nds). Die ROM gehört nicht in
 dieses Paket und wird nicht weitergegeben.
@@ -11,6 +15,7 @@ MarioPartyDS.exe          das Spiel
 SDL3.dll                  Fenster, Ton und Controller (gehört neben die Exe)
 MarioPartyDS-server.exe   der Server, nur für den Host einer Online-Partie
 ONLINE.txt                Anleitung für das Spielen über das Internet
+LIZENZ.txt                Urheberrecht und was erlaubt ist
 SDL3-LICENSE.txt          Lizenz von SDL3
 
 Weitergeben

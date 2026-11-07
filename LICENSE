@@ -1,0 +1,39 @@
+Copyright (c) 2026 Ersin (GitHub: Erzoy38). Alle Rechte vorbehalten.
+Copyright (c) 2026 Ersin (GitHub: Erzoy38). All rights reserved.
+
+Deutsch
+-------
+Der Quellcode, die Werkzeuge, die Dokumente und die daraus gebauten Programme in diesem Projekt
+sind urheberrechtlich geschützt. Urheber ist Ersin (GitHub: Erzoy38).
+
+Ohne vorherige schriftliche Erlaubnis des Urhebers ist es nicht gestattet:
+- das Projekt oder Teile davon zu kopieren, zu verbreiten oder öffentlich zugänglich zu machen,
+- es zu verändern, zu übersetzen oder darauf aufbauende Werke zu erstellen,
+- es ganz oder teilweise als eigene Arbeit auszugeben oder den Urhebervermerk zu entfernen,
+- es gewerblich zu nutzen.
+
+Erlaubt ist:
+- den Quellcode anzusehen, wo der Urheber ihn öffentlich zeigt,
+- ein Programmpaket, das man vom Urheber selbst bekommen hat, für sich zum Spielen zu benutzen.
+  Weitergeben darf man es nur mit Erlaubnis des Urhebers.
+
+Nicht Teil dieses Projekts und nicht vom Urheber:
+- Das Spiel „Mario Party DS“, seine Figuren, Namen, Grafiken, Musik und sein Programmcode gehören
+  ihren Rechteinhabern. Dieses Projekt enthält keine ROM und keine Spielinhalte; wer es benutzt,
+  braucht eine eigene, rechtmäßig erworbene Kopie des Spiels.
+- SDL3 steht unter der zlib-Lizenz (siehe SDL3-LICENSE.txt im Programmpaket).
+
+Das Projekt wird ohne jede Gewähr bereitgestellt. Anfragen zur Nutzung an den Urheber über GitHub:
+https://github.com/Erzoy38
+
+English
+-------
+The source code, tools, documents and programs built from them in this project are protected by
+copyright. The author is Ersin (GitHub: Erzoy38). Without the author's prior written permission
+nobody may copy, distribute, publish, modify or build upon this project or any part of it, present
+it or any part of it as their own work, remove this notice, or use it commercially. Viewing the
+source where the author shows it publicly, and using a program package received directly from
+the author for personal play, is allowed; passing it on needs the author's permission.
+
+"Mario Party DS" and everything belonging to it are the property of their rights holders and not
+part of this project. SDL3 is under the zlib license. Provided without any warranty.
