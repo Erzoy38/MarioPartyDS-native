@@ -9,6 +9,10 @@
 //   guest -> server: the game's own frames (net.cpp), passed to the host as kRelayFrom {slot, type, body}
 //   host -> server:  kRelayTo {slot, type, body}, passed to that guest as the plain frame {type, body}
 // So only the server needs a port that the others can reach.
+//
+// A connection that breaks during the game can come back with kResume and the token from kStarted;
+// the room waits for it. The host's kLeave in the relay ends the room. A restarted server knows no
+// rooms: the host's kResume builds the room again, guests that come first are told to try again.
 #pragma once
 
 #include <cstdint>
@@ -18,7 +22,7 @@
 
 namespace lobby {
 
-constexpr std::uint16_t kVersion = 1;
+constexpr std::uint16_t kVersion = 2;
 constexpr std::uint16_t kDefaultPort = 47000;
 constexpr int kCodeLength = 6;
 // Without I, O, 0 and 1, which are easy to confuse.
@@ -44,17 +48,22 @@ enum Type : std::uint8_t {
     kReady = 5,   // u8 ready
     kStart = 6,   // host only
     kLeave = 7,   // back to the menu, the connection stays
-    kPing = 8,    // u64 client time, u16 last round trip in ms
+    kPing = 8,    // u64 client time, u16 last round trip in ms; answered in the relay too
+    kResume = 9,  // back into a started room: 6 bytes code, u8 slot, u64 token; the host adds
+                  // u8 player count and every slot's token, so a restarted server can rebuild the room
     // server -> client
     kRoom = 20,     // 6 bytes code, u8 own slot, then 4 x {u8 present, str name, u8 character, u8 ready, u16 ping}
     kError = 21,    // u8 error code
-    kStarted = 22,  // u8 own slot, u8 player count, 4 x u8 character
+    kStarted = 22,  // u8 own slot, u8 player count, 4 x u8 character, u8 input delay in pictures,
+                    // u64 own token (for kResume); the host also gets every slot's token (player count x u64)
     kPong = 23,     // u64 client time, as sent
     kLeft = 24,     // the room is gone for this client (left, closed or expired); u8 reason (an Error)
+    kResumed = 25,  // kResume accepted: u8 slot; the connection carries the game again
     // relay, after kStarted
     kRelayFrom = 30,  // to the host: u8 slot, u8 type, body
     kRelayTo = 31,    // from the host: u8 slot, u8 type, body
-    kRelayGone = 32,  // to the host: u8 slot of a guest whose connection ended
+    kRelayGone = 32,  // to the others: u8 slot whose connection ended (it may come back with kResume)
+    kRelayBack = 33,  // to the others: u8 slot that is back
 };
 
 enum Error : std::uint8_t {
@@ -73,6 +82,8 @@ enum Error : std::uint8_t {
     kBadMessage = 12,
     kNotInRoom = 13,
     kLeftRoom = 14,
+    kTryAgain = 15,
+    kBadToken = 16,
 };
 
 inline const char* error_text(int error) {
@@ -91,6 +102,8 @@ inline const char* error_text(int error) {
         case kBadMessage: return "Ungültige Nachricht.";
         case kNotInRoom: return "Nicht in einem Raum.";
         case kLeftRoom: return "Raum verlassen.";
+        case kTryAgain: return "Der Raum wartet noch auf den Host.";
+        case kBadToken: return "Dieser Platz gehört jemand anderem.";
         default: return "Unbekannter Fehler.";
     }
 }
@@ -103,6 +116,7 @@ struct Writer {
     std::vector<std::uint8_t> bytes;
     void u8(std::uint32_t v) { bytes.push_back(std::uint8_t(v)); }
     void u16(std::uint32_t v) { u8(v); u8(v >> 8); }
+    void u32(std::uint32_t v) { u16(v); u16(v >> 16); }
     void u64(std::uint64_t v) { for (int i = 0; i < 8; ++i) u8(std::uint32_t(v >> (8 * i))); }
     void str(const std::string& s) {
         const std::size_t n = s.size() < 255 ? s.size() : 255;
@@ -127,6 +141,7 @@ struct Reader {
     }
     std::uint32_t u8() { return need(1) ? bytes[at++] : 0; }
     std::uint32_t u16() { const std::uint32_t lo = u8(); return lo | (u8() << 8); }
+    std::uint32_t u32() { const std::uint32_t lo = u16(); return lo | (u16() << 16); }
     std::uint64_t u64() {
         std::uint64_t v = 0;
         for (int i = 0; i < 8; ++i) v |= std::uint64_t(u8()) << (8 * i);

@@ -1,6 +1,7 @@
 // MarioPartyDS-server: lobby with room codes, and the relay for the game once a room has started.
 //
 // Usage: MarioPartyDS-server [--port N] [--bind ADDRESS] [--code-lifetime SECONDS] [--seed N]
+//                             [--input-delay PICTURES] [--idle-timeout SECONDS]
 //
 // --bind 127.0.0.1 accepts players from this PC only (tests; no firewall question). The default
 // 0.0.0.0 accepts players from other PCs, which Windows asks about once.
@@ -9,6 +10,11 @@
 // keeps up to four players per room, checks every lobby request, and after the start passes the
 // game's messages between the host's game and the guests' games (see runtime/lobby_protocol.h).
 // One thread, select() over all connections.
+//
+// A started room outlives broken connections: a player comes back with kResume and the token from
+// kStarted, and the others are told (kRelayGone, kRelayBack). The room ends when the host leaves on
+// purpose (kLeave) or nobody has been connected for 10 minutes. The server keeps no game state: after
+// a restart the host's kResume builds the room again, and the games resend what was lost.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "lobby_protocol.h"
@@ -55,6 +61,7 @@ struct Client {
     u16 ping = 0;
     bool relay = false;  // the room has started: frames are game data
     bool closing = false;
+    double heard = 0;  // last bytes from this client
 };
 
 struct Room {
@@ -62,6 +69,9 @@ struct Room {
     std::array<int, kMaxPlayers> members{-1, -1, -1, -1};  // client ids by slot; slot 0 is the host
     bool started = false;
     double created = 0;
+    int players = 0;                        // after the start
+    std::array<u64, kMaxPlayers> tokens{};  // after the start: what kResume must show, by slot
+    double empty_since = 0;                 // started and nobody connected since then; 0 while somebody is
 };
 
 std::map<int, Client> g_clients;
@@ -69,7 +79,11 @@ std::map<std::string, Room> g_rooms;
 std::set<std::string> g_spent_codes;  // expired or used codes: reported as expired, never handed out again
 int g_next_id = 1;
 double g_code_lifetime = 30 * 60;
+double g_idle_timeout = 20;
+double g_empty_room_lifetime = 10 * 60;
+int g_input_delay = -1;  // pictures; -1: from the players' pings at the start
 std::mt19937 g_random;
+std::mt19937_64 g_token_random{std::random_device{}()};  // never from --seed
 
 void send_frame(Client& client, u8 type, const std::vector<u8>& body) {
     if (client.closing) return;
@@ -164,6 +178,20 @@ void leave_room(Client& client, int id, Error reason) {
     Room& room = it->second;
     const int slot = client.slot;
     std::printf("room %s: %s leaves slot %d\n", room.code.c_str(), client.name.c_str(), slot);
+    if (room.started) {
+        // The game goes on; the slot waits for its player (kResume) and the others are told.
+        room.members[slot] = -1;
+        client.room.clear();
+        client.slot = -1;
+        for (int other : room.members) {
+            if (other < 0) continue;
+            Writer w;
+            w.u8(u32(slot));
+            send_frame(g_clients[other], kRelayGone, w.bytes);
+        }
+        if (count_members(room) == 0) room.empty_since = now_seconds();
+        return;
+    }
     if (slot == 0) {
         close_room(room, kHostLeft);
         return;
@@ -177,15 +205,7 @@ void leave_room(Client& client, int id, Error reason) {
         w.u8(reason);
         send_frame(client, kLeft, w.bytes);
     }
-    if (room.started) {
-        if (room.members[0] >= 0) {
-            Writer w;
-            w.u8(u32(slot));
-            send_frame(g_clients[room.members[0]], kRelayGone, w.bytes);
-        }
-    } else {
-        send_room(room);
-    }
+    send_room(room);
     (void)id;
 }
 
@@ -198,7 +218,18 @@ void start_room(Room& room) {
     }
     room.members = order;
     room.started = true;
-    std::printf("room %s starts with %d players\n", room.code.c_str(), count);
+    room.players = count;
+    for (int slot = 0; slot < count; ++slot) room.tokens[size_t(slot)] = g_token_random() | 1;
+    // Input delay: the way from a guest through the server to the host and back, in pictures of
+    // 1/60 s, plus one for unevenness. Pings are the players' last round trips to the server.
+    int delay = g_input_delay;
+    if (delay < 0) {
+        int slowest = 0;
+        for (int slot = 1; slot < count; ++slot) slowest = std::max<int>(slowest, g_clients[order[slot]].ping);
+        const int path_ms = g_clients[order[0]].ping + slowest;
+        delay = std::clamp(1 + (path_ms * 60 + 999) / 1000, 1, 15);
+    }
+    std::printf("room %s starts with %d players, input delay %d\n", room.code.c_str(), count, delay);
     for (int slot = 0; slot < count; ++slot) {
         Client& member = g_clients[order[slot]];
         member.slot = slot;
@@ -206,6 +237,11 @@ void start_room(Room& room) {
         w.u8(u32(slot));
         w.u8(u32(count));
         for (int i = 0; i < kMaxPlayers; ++i) w.u8(order[i] >= 0 ? u32(g_clients[order[i]].character) : 0xFF);
+        w.u8(u32(delay));
+        w.u64(room.tokens[size_t(slot)]);
+        if (slot == 0) {
+            for (int i = 0; i < count; ++i) w.u64(room.tokens[size_t(i)]);
+        }
         send_frame(member, kStarted, w.bytes);
         member.relay = true;
     }
@@ -218,6 +254,20 @@ void handle_relay(Client& client, u8 type, const std::vector<u8>& body) {
         return;
     }
     Room& room = it->second;
+    if (type == kPing) {  // the connection's own round trip; never passed on
+        Reader r(body);
+        const u64 time = r.u64();
+        client.ping = u16(r.u16());
+        Writer w;
+        w.u64(time);
+        send_frame(client, kPong, w.bytes);
+        return;
+    }
+    if (type == kLeave) {
+        if (client.slot == 0) close_room(room, kHostLeft);
+        else client.closing = true;
+        return;
+    }
     if (client.slot == 0) {
         if (type != kRelayTo || body.size() < 2 || body[0] >= kMaxPlayers || room.members[body[0]] < 0) return;
         Client& to = g_clients[room.members[body[0]]];
@@ -303,6 +353,60 @@ void handle(int id, u8 type, const std::vector<u8>& body) {
             send_room(room);
             return;
         }
+        case kResume: {
+            std::string code = r.fixed(kCodeLength);
+            const int slot = int(r.u8());
+            const u64 token = r.u64();
+            std::array<u64, kMaxPlayers> tokens{};
+            int count = 0;
+            if (slot == 0 && r.ok && !r.done()) {
+                count = int(r.u8());
+                for (int i = 0; i < count && i < kMaxPlayers; ++i) tokens[size_t(i)] = r.u64();
+            }
+            if (!r.done() || slot >= kMaxPlayers || count > kMaxPlayers) return send_error(client, kBadMessage);
+            for (char& c : code) c = char(std::toupper(static_cast<unsigned char>(c)));
+            auto it = g_rooms.find(code);
+            if (it == g_rooms.end()) {
+                // Unknown here: after a restart the host builds it again; guests wait for that.
+                if (g_spent_codes.count(code)) return send_error(client, kExpired);
+                if (slot != 0 || count < 2 || tokens[0] != token) return send_error(client, kTryAgain);
+                Room room;
+                room.code = code;
+                room.created = now_seconds();
+                room.started = true;
+                room.players = count;
+                room.tokens = tokens;
+                it = g_rooms.emplace(code, room).first;
+                std::printf("room %s built again by its host (%d players)\n", code.c_str(), count);
+            }
+            Room& room = it->second;
+            if (!room.started) return send_error(client, kAlreadyStarted);
+            if (slot >= room.players || room.tokens[size_t(slot)] != token) return send_error(client, kBadToken);
+            if (!client.room.empty()) leave_room(client, id, kLeftRoom);
+            const int old = room.members[size_t(slot)];
+            if (old >= 0 && old != id) {  // the broken connection, not noticed yet: replaced
+                Client& stale = g_clients[old];
+                stale.room.clear();
+                stale.slot = -1;
+                stale.closing = true;
+            }
+            room.members[size_t(slot)] = id;
+            room.empty_since = 0;
+            client.room = code;
+            client.slot = slot;
+            client.relay = true;
+            std::printf("room %s: %s is back in slot %d\n", code.c_str(), client.name.c_str(), slot);
+            Writer w;
+            w.u8(u32(slot));
+            send_frame(client, kResumed, w.bytes);
+            for (int other : room.members) {
+                if (other < 0 || other == id) continue;
+                Writer back;
+                back.u8(u32(slot));
+                send_frame(g_clients[other], kRelayBack, back.bytes);
+            }
+            return;
+        }
         default: break;
     }
     auto it = g_rooms.find(client.room);
@@ -358,8 +462,17 @@ void expire_rooms() {
     std::vector<std::string> old;
     for (auto& [code, room] : g_rooms) {
         if (!room.started && now - room.created > g_code_lifetime) old.push_back(code);
+        if (room.started && room.empty_since > 0 && now - room.empty_since > g_empty_room_lifetime) old.push_back(code);
     }
     for (const std::string& code : old) close_room(g_rooms[code], kExpired);
+    // A connection that has said nothing for a while is dead (players ping every second).
+    for (auto& [id, client] : g_clients) {
+        if (!client.closing && client.heard > 0 && now - client.heard > g_idle_timeout) {
+            std::printf("client %d (%s) silent for %.0f s\n", id, client.name.c_str(), now - client.heard);
+            client.closing = true;
+            client.outbox.clear();
+        }
+    }
 }
 
 }  // namespace
@@ -374,6 +487,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--bind")) bind_address = argv[i + 1];
         else if (!std::strcmp(argv[i], "--code-lifetime")) g_code_lifetime = std::atof(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--seed")) seed = u32(std::strtoul(argv[i + 1], nullptr, 0));
+        else if (!std::strcmp(argv[i], "--input-delay")) g_input_delay = std::atoi(argv[i + 1]);
+        else if (!std::strcmp(argv[i], "--idle-timeout")) g_idle_timeout = std::atof(argv[i + 1]);
     }
     g_random.seed(seed);
     WSADATA data;
@@ -413,6 +528,7 @@ int main(int argc, char** argv) {
                 setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&yes), sizeof yes);
                 const int id = g_next_id++;
                 g_clients[id].socket = s;
+                g_clients[id].heard = now_seconds();
                 std::printf("client %d connected\n", id);
             } else if (s != INVALID_SOCKET) {
                 closesocket(s);
@@ -429,6 +545,7 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 client.inbox.insert(client.inbox.end(), buffer, buffer + n);
+                client.heard = now_seconds();
             }
         }
         for (int id : gone) drop(id);

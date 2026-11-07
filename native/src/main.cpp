@@ -188,33 +188,96 @@ void draw_pointer(u8* picture) {
 }
 
 // While the network waits for the other players: the window keeps answering and says so.
+SDL_Window* g_window = nullptr;
 SDL_Renderer* g_renderer = nullptr;
 SDL_Texture* g_texture = nullptr;
+std::string g_rom_path, g_settings_arg;
+bool g_wait_asks_to_leave = false;
+
+// Starts this program again with the menu, after the game has ended.
+void restart_with_menu(const std::string& rom_path) {
+    const char* base = SDL_GetBasePath();
+    const std::string exe = std::string(base ? base : "") + "MarioPartyDS.exe";
+    std::vector<const char*> args{exe.c_str(), rom_path.c_str(), "--menu"};
+    if (!g_settings_arg.empty()) {
+        args.push_back("--settings");
+        args.push_back(g_settings_arg.c_str());
+    }
+    args.push_back(nullptr);
+    SDL_Process* process = SDL_CreateProcess(args.data(), false);
+    if (process == nullptr) std::printf("restart failed: %s\n", SDL_GetError());
+    else SDL_DestroyProcess(process);
+}
+
+void update_online_title() {
+    static Uint64 last = 0;
+    const Uint64 now = SDL_GetTicks();
+    if (now - last < 1000) return;
+    last = now;
+    const std::string line = net_status_line();
+    if (!line.empty()) SDL_SetWindowTitle(g_window, ("Mario Party DS - online, " + line).c_str());
+}
 
 void on_network_wait() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT) {
             std::printf("closed while waiting for the other players\n");
+            net_leave();
             SDL_Quit();
             std::exit(0);
         }
+        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
+            if (event.key.scancode == SDL_SCANCODE_ESCAPE) {
+                g_wait_asks_to_leave = !g_wait_asks_to_leave;
+            } else if (g_wait_asks_to_leave && (event.key.scancode == SDL_SCANCODE_RETURN
+                                                || event.key.scancode == SDL_SCANCODE_KP_ENTER)) {
+                std::printf("left while waiting for the other players\n");
+                net_leave();
+                restart_with_menu(g_rom_path);
+                SDL_Quit();
+                std::exit(0);
+            }
+        }
     }
+    update_online_title();
+    std::string first, second;
+    net_wait_text(first, second);
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
     SDL_RenderClear(g_renderer);
     SDL_RenderTexture(g_renderer, g_texture, nullptr, nullptr);
-    draw_question(g_renderer, "Warte auf die anderen", "Spieler ...");
+    if (g_wait_asks_to_leave) draw_question(g_renderer, "Zurück zum Hauptmenü?", "Enter: ja    Esc: nein");
+    else draw_message(g_renderer, first.empty() ? "Warte auf die anderen Spieler ..." : first, second);
     SDL_RenderPresent(g_renderer);
 }
 
-// Starts this program again with the menu, after the game has ended.
-void restart_with_menu(const std::string& rom_path) {
-    const char* base = SDL_GetBasePath();
-    const std::string exe = std::string(base ? base : "") + "MarioPartyDS.exe";
-    const char* args[] = {exe.c_str(), rom_path.c_str(), "--menu", nullptr};
-    SDL_Process* process = SDL_CreateProcess(args, false);
-    if (process == nullptr) std::printf("restart failed: %s\n", SDL_GetError());
-    else SDL_DestroyProcess(process);
+// The game is over for this player because of the network: says why, then back to the menu.
+void on_network_end(const std::string& text) {
+    const Uint64 until = SDL_GetTicks() + 8000;
+    while (SDL_GetTicks() < until) {
+        SDL_Event event;
+        bool done = false;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) {
+                SDL_Quit();
+                std::exit(0);
+            }
+            if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
+                || event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                done = true;
+            }
+        }
+        if (done) break;
+        SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(g_renderer);
+        SDL_RenderTexture(g_renderer, g_texture, nullptr, nullptr);
+        draw_message(g_renderer, text, "Weiter mit einer Taste");
+        SDL_RenderPresent(g_renderer);
+        SDL_Delay(30);
+    }
+    restart_with_menu(g_rom_path);
+    SDL_Quit();
+    std::exit(0);
 }
 
 }  // namespace
@@ -299,8 +362,14 @@ int main(int argc, char** argv) {
     // The menu: local game, or a room on the lobby server.
     NetSettings net;
     MachineSettings settings;
+    // A guest's way back into a game whose program ended without leaving it (closed, crashed).
+    std::filesystem::path rejoin_file = data_folder / "rejoin.txt";
+    if (!settings_arg.empty()) rejoin_file = std::filesystem::path(settings_file).replace_extension(".rejoin");
+    NetSettings rejoin;
+    std::string rejoin_room;
+    if (net_load_rejoin(rejoin_file.string(), rejoin)) rejoin_room = rejoin.code.empty() ? "direkt" : rejoin.code;
     if (force_menu || (!local && frame_limit < 0)) {
-        LaunchChoice choice = run_launcher(window, renderer, app, settings_file);
+        LaunchChoice choice = run_launcher(window, renderer, app, settings_file, rejoin_room);
         if (choice.kind == LaunchChoice::Kind::Quit) {
             SDL_Quit();
             return 0;
@@ -312,10 +381,26 @@ int main(int argc, char** argv) {
             net.relay_inbox = start.inbox;
             net.character = start.characters[size_t(start.slot)];
             net.name = app.name;
+            net.address = start.address;
+            net.port = start.port;
+            net.code = start.code;
+            net.slot = start.slot;
+            net.token = start.token;
+            net.tokens = start.tokens;
+            net.players = start.players;
+            net.input_delay = start.input_delay;
+            net.rejoin_file = rejoin_file.string();
             if (net.role == NetRole::Guest) settings.boot_type = 2;
             const std::string title = "Mario Party DS - online, P" + std::to_string(start.slot + 1) + " von " +
                                       std::to_string(start.players);
             SDL_SetWindowTitle(window, title.c_str());
+        }
+        if (choice.kind == LaunchChoice::Kind::Rejoin) {
+            net = rejoin;
+            net.rejoin_file = rejoin_file.string();
+            settings.boot_type = 2;
+            app.name = net.name;
+            SDL_SetWindowTitle(window, ("Mario Party DS - online, zurück als P" + std::to_string(net.slot + 1)).c_str());
         }
     }
     settings.player_name = app.name;
@@ -325,9 +410,14 @@ int main(int argc, char** argv) {
         save_arg.empty() ? data_folder / "MarioPartyDS.sav" : std::filesystem::u8path(save_arg);
     settings.save = read_file(save_path);
     machine_boot(rom, settings);
+    g_window = window;
     g_renderer = renderer;
     g_texture = texture;
+    g_rom_path = rom_path;
+    g_settings_arg = settings_arg;
+    const bool online = net.role != NetRole::Off;
     net_set_wait_callback(on_network_wait);
+    net_set_end_callback(on_network_end);
     net_start(net);
     bool asking_to_leave = false, back_to_menu = false;
     {
@@ -406,6 +496,23 @@ int main(int argc, char** argv) {
 
         machine_run_frame();
         ++frames;
+        if (online) update_online_title();
+        // Back in a game: the game so far is played again as fast as it goes, with a note now and then.
+        if (online && net_catching_up()) {
+            static Uint64 last_note = 0;
+            if (SDL_GetTicks() - last_note >= 250) {
+                last_note = SDL_GetTicks();
+                std::string first, second;
+                net_wait_text(first, second);
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                SDL_RenderClear(renderer);
+                draw_message(renderer, first, second);
+                SDL_RenderPresent(renderer);
+            }
+            sound_take_samples(samples);
+            next_frame = SDL_GetPerformanceCounter();
+            continue;
+        }
 
         sound_take_samples(samples);
         if (audio != nullptr && !samples.empty()) {
@@ -449,7 +556,9 @@ int main(int argc, char** argv) {
         out.write(reinterpret_cast<const char*>(ppu_frame()), std::streamsize(picture.size()));
     }
     std::printf("frames %lld, ended normally\n", frames);
-    // The machine cannot be booted twice in one process; the menu comes back as a new one.
+    // Online, the others are told; the machine cannot be booted twice in one process, so the menu
+    // comes back as a new one.
+    if (online) net_leave();
     if (back_to_menu) restart_with_menu(rom_path);
     SDL_Quit();
     return 0;

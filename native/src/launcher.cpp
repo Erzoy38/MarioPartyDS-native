@@ -240,6 +240,34 @@ void draw_question(SDL_Renderer* renderer, const std::string& first, const std::
     centred(renderer, 196, second, kInk);
 }
 
+void draw_message(SDL_Renderer* renderer, const std::string& message, const std::string& last) {
+    const float limit = kWidth - 48;
+    std::vector<std::string> lines;
+    std::string line, word;
+    auto put_word = [&] {
+        if (word.empty()) return;
+        const std::string longer = line.empty() ? word : line + " " + word;
+        if (!line.empty() && text_width(longer) > limit) {
+            lines.push_back(line);
+            line = word;
+        } else {
+            line = longer;
+        }
+        word.clear();
+    };
+    for (char ch : message) {
+        if (ch == ' ') put_word();
+        else word += ch;
+    }
+    put_word();
+    if (!line.empty()) lines.push_back(line);
+    if (!last.empty()) lines.push_back(""), lines.push_back(last);
+    const float height = 24 + 14 * float(lines.size());
+    const float top = 192 - height / 2;
+    box(renderer, 16, top, kWidth - 32, height, kPanel, kInk);
+    for (size_t i = 0; i < lines.size(); ++i) centred(renderer, top + 12 + 14 * float(i), lines[i], kInk);
+}
+
 void split_server(const std::string& server, std::string& address, std::uint16_t& port) {
     address = server;
     port = lobby::kDefaultPort;
@@ -276,7 +304,7 @@ void save_settings(const std::filesystem::path& file, const AppSettings& s) {
 }
 
 LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSettings& settings,
-                          const std::filesystem::path& settings_file) {
+                          const std::filesystem::path& settings_file, const std::string& rejoin_room) {
     LobbyClient client;
     Screen screen = Screen::Main;
     int focus = 0;
@@ -389,6 +417,16 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
                 if (menu.button(bx, 240, bw, "Online spielen")) { message.clear(); go(Screen::Online); }
                 if (menu.button(bx, 266, bw, "Einstellungen")) { edited = settings; go(Screen::Settings); }
                 if (menu.button(bx, 292, bw, "Beenden") || in.back) return {};
+                if (!rejoin_room.empty()) {
+                    centred(renderer, 162, "Laufende Partie: " + rejoin_room, kInk);
+                    if (menu.button(bx, 322, bw, "Zurück in die Partie")) {
+                        for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
+                        if (text_input) SDL_StopTextInput(window);
+                        LaunchChoice choice;
+                        choice.kind = LaunchChoice::Kind::Rejoin;
+                        return choice;
+                    }
+                }
                 break;
             }
             case Screen::Online: {

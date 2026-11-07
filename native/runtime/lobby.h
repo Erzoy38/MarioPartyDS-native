@@ -23,6 +23,12 @@ struct LobbyStart {
     std::array<int, lobby::kMaxPlayers> characters{-1, -1, -1, -1};
     std::uintptr_t socket = 0;     // the connection, now carrying the game (blocking mode)
     std::vector<std::uint8_t> inbox;  // bytes that came after the start message
+    int input_delay = 1;              // pictures, chosen by the server from the pings
+    std::uint64_t token = 0;          // shows the server who comes back after a broken connection
+    std::array<std::uint64_t, lobby::kMaxPlayers> tokens{};  // the host: everybody's, for a restarted server
+    std::string code;                 // the room
+    std::string address;              // the server, for coming back
+    std::uint16_t port = 0;
 };
 
 class LobbyClient {
@@ -65,6 +71,8 @@ private:
     Phase phase_ = Phase::Offline;
     std::uintptr_t socket_ = ~std::uintptr_t(0);
     std::string name_;
+    std::string address_;
+    std::uint16_t port_ = 0;
     std::vector<std::uint8_t> inbox_;
     std::vector<std::uint8_t> outbox_;
     std::string message_;
@@ -73,6 +81,8 @@ private:
     int own_slot_ = -1;
     std::array<LobbySeat, lobby::kMaxPlayers> seats_{};
     int ping_ms_ = 0;
+    std::array<int, 5> recent_pings_{};
+    std::size_t ping_count_ = 0;
     double connect_started_ = 0;
     double last_ping_ = 0;
     std::uint64_t room_updates_ = 0;

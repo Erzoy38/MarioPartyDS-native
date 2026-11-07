@@ -199,7 +199,7 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 | 8 | Netz im eigenen Rechner: Lockstep, Server headless | 4 Prozesse lokal, Prüfsummen gleich über eine ganze Partie |
 | 9 | Minispiele einzeln online, Matrix mit 73 Zeilen. **Erreicht mit Einschränkungen** (siehe unten) | Jedes Spiel gestartet, gespielt, Ergebnis gleich bei allen; Grenzen dokumentiert |
 | 10 | Lobby, Codes, Charakterwahl, Oberfläche. **Erreicht mit Einschränkungen** (siehe unten) | Ablauf von Raum bis Start in 4 Prozessen |
-| 11 | Abbrüche, Wiedereintritt, Serverneustart, Verzögerung, Ping | Netzsimulator-Tests bestanden |
+| 11 | Abbrüche, Wiedereintritt, Serverneustart, Verzögerung, Ping. **Erreicht mit Einschränkungen** (siehe unten) | Netzsimulator-Tests bestanden |
 | 12 | Internet: Server betreiben, Verschlüsselung, Einstellungen, Vollbild | 4 echte PCs an verschiedenen Standorten spielen eine Party |
 
 ### Ergebnis Phase 2 [gemessen, gegen melonDS an `main`]
@@ -470,10 +470,65 @@ Nach den Korrekturen liefen die Spiele beim nächsten Lauf durch.
 **Grenzen:**
 - Nur auf einem PC getestet (`--bind 127.0.0.1`). Der Server wartet sonst auf allen Adressen. Windows fragt dann einmal nach einer Firewall-Freigabe; die Entscheidung bleibt beim Nutzer.
 - Die automatische Figurenwahl ist nur in Free Play geprüft. Die übrigen Modi sind aus den Texten abgeleitet; die Lage der Knöpfe dort ist nicht geprüft.
-- Wer das Spiel verlässt oder die Verbindung verliert, beendet die Partie für alle (Phase 11).
+- Wer das Spiel verlässt oder die Verbindung verliert, beendet die Partie für alle (Phase 11; seitdem: Verbindungsabbrüche überbrückt, absichtliches Verlassen beendet weiterhin).
 - Die Oberfläche nutzt die eingebaute SDL-Schrift (ASCII; Umlaute als Punkte über dem Buchstaben, ß als „ss“) und die Farben der Spielmenüs, nicht die Schrift des Spiels.
 - „Zurück zum Hauptmenü“ startet das Programm neu, weil die Maschine nur einmal je Prozess bootet.
 - Gamepad im Menü: Steuerkreuz, A und B, ohne Test mit echtem Controller.
+
+### Ergebnis Phase 11 [gemessen, Server und 4 Prozesse auf einem PC, je Spieler ein Netzsimulator]
+
+**Aufbau:**
+
+| Teil | Datei | Aufgabe |
+|---|---|---|
+| Nummerierte Nachrichten | `native/runtime/net.cpp` | Jede Spielnachricht trägt eine Nummer und die letzte empfangene Nummer der Gegenseite. Ein Gast hält seine unbestätigten Nachrichten, der Host alle gesendeten. Nach einem Abbruch tauschen beide aus, was sie haben (`kSync`), und senden den Rest erneut, in Stücken von höchstens 256 KB je Durchlauf |
+| Wiederverbinden | `net.cpp`, `server.cpp` | Ein Gast verbindet sich jede Sekunde neu, ein Host über den Server ebenso. Beim Start gibt der Server jedem Platz einen Schlüssel (64 Bit). Mit `kResume` und diesem Schlüssel kommt man auf seinen Platz zurück. Ein gestarteter Raum bleibt bestehen, bis der Host ihn absichtlich verlässt oder 10 Minuten lang niemand verbunden ist |
+| Serverneustart | `server.cpp` | Der Server speichert keinen Spielzustand. Nach einem Neustart baut der Host den Raum mit Code und allen Schlüsseln wieder auf; Gäste, die vor ihm kommen, hören „noch einmal versuchen“ |
+| Tote Leitung | `net.cpp`, `server.cpp` | Ping jede Sekunde. Kommt 6 s lang nichts, gilt die Verbindung als tot und wird neu aufgebaut; der Server trennt nach 20 s Stille |
+| Eingabeverzögerung | `net.cpp` | Der Datensatz des N-ten Bildes eines Spielers kommt in seinen N-ten Schritt. Mit Verzögerung D haben die ersten D Bilder des Austauschs keinen Schritt. Das Spiel lässt dann seinen Spieltakt aus (`0x01FFC4D4`), wie beim Start des Funk-Datenaustauschs. Danach sind D Datensätze unterwegs, und das Warten auf die anderen entfällt, solange der Weg Host–Gast–Host kürzer ist als D Bilder |
+| Wahl der Verzögerung | `server.cpp` | Beim Start: 1 + Ping des Hosts plus größter Ping eines Gastes, in Bildern zu 1/60 s, höchstens 15 (`--input-delay` legt sie fest). Ping ist das kleinste der letzten fünf Lobby-Pings |
+| Port-Daten | `net.cpp` | Daten vom Host tragen seine Schrittnummer. Der Gast übergibt sie nach dem Schritt, der auf das Senden folgt. So ist der Zeitpunkt unabhängig vom Netz |
+| Ende der Partie | `net.cpp` | Wer absichtlich geht (Esc → Hauptmenü, Fenster schließen), beendet die Partie für alle. Wer länger als 120 s weg ist, ebenso. Alle sehen einen Satz dazu und kommen ins Hauptmenü zurück |
+| Neuer Programmstart eines Gastes | `net.cpp`, `launcher.cpp` | Ein Gast schreibt beim Start Raum, Platz und Schlüssel in eine Datei (`rejoin.txt`). Endet sein Programm ohne Abmelden (Absturz, Abschuss), bietet das Hauptmenü „Zurück in die Partie“. Der neue Prozess bootet, der Host sendet ihm alle bisherigen Nachrichten, und er spielt die Partie bis zum Stand der anderen nach. Was er dabei selbst erzeugt und der Host schon hat, sendet er nicht noch einmal. Die anderen warten so lange |
+| Anzeige | `main.cpp` | Fenstertitel jede Sekunde, z. B. „online, P1 von 4, Ping P2 63 ms, P3 63 ms, P4 63 ms“. Beim Warten der Grund mit Restzeit, z. B. „P3 (Name): Verbindung unterbrochen / Warte auf die Rückkehr ... noch 97 s“. Beim Nachholen „Hole die laufende Partie nach ... Schritt X von Y“, ohne Bild und Bildtakt |
+
+**Netzsimulator:** `tools/netsim.py`, ein TCP-Zwischenstück je Spieler zwischen Spiel und Server. Es verzögert jedes Stück um eine feste Zeit plus Zufall und hält die Reihenfolge ein. „Verlust“ heißt: ein Stück kommt 200 ms später, so wie TCP es nach einem verlorenen Segment erneut sendet. Über eine Steuerdatei: `cut S` trennt alle Verbindungen und weist S Sekunden lang neue ab; `silent S` leitet S Sekunden lang nichts weiter, lässt die Verbindungen aber offen. Zeitauflösung von asyncio unter Windows: etwa 15 ms.
+
+**Belegt** (`tools/netsim_test.py`, alle 12 Fälle, ein Lauf; Server, 4 Prozesse, je ein Simulator; Free Play bis zum Ende des ersten Minispiels):
+
+| Fall | Netz je Spieler (eine Richtung) | Ergebnis |
+|---|---|---|
+| plain | keine Verzögerung | Verzögerung 3, Ping Gast–Host 1–31 ms, Minispiel bei allen von Schritt 3772 bis 5816, 70 s |
+| rtt50 | 25 ms + bis 5 ms | Verzögerung 12, Ping Gast–Host 119–143 ms, Minispiel bei allen gleich, 87 s |
+| rtt150 | 75 ms + bis 15 ms | Verzögerung 15, Ping 319–390 ms, gleich, 163 s |
+| rtt300_loss | 150 ms + bis 25 ms, 2 % Verlust | Verzögerung 15, Ping 629–1074 ms, gleich, 339 s |
+| guest_cut | Gast P3 4 s getrennt | P3 verbindet sich 5-mal neu, Host sendet 7 Nachrichten erneut, gleich |
+| guest_silent | P2 10 s ohne Daten bei offener Verbindung | nach 6 s erkannt, neu verbunden, gleich |
+| host_cut | Host 4 s getrennt | Host verbindet sich neu, alle Seiten senden Fehlendes, gleich |
+| server_restart | Server beendet, nach 3 s neu gestartet | alle verbinden sich 2–3-mal neu, der Host baut den Raum wieder auf, gleich |
+| guest_restart | Prozess von P3 beendet, nach 2 s neu mit `--rejoin` | Host sendet 4293 Nachrichten, der neue Prozess holt mit etwa 133 Schritten/s auf, Minispiel bei allen von Schritt 3791 bis 5848 |
+| guest_gone | Prozess von P4 beendet, kein neuer | nach der Wartezeit (im Test 20 s) enden die anderen drei mit „P4 (Guest3) ist nicht zurückgekommen. Die Partie ist beendet.“ |
+| guest_leaves | P4 geht absichtlich | die anderen enden mit „P4 (Guest3) hat das Spiel verlassen …“ |
+| host_leaves | Host geht absichtlich | alle Gäste enden mit „Der Host hat das Spiel beendet.“ |
+
+„Gleich“ heißt: alle vier spielen das Minispiel vom selben Schritt bis zum selben Schritt und beenden es. Dazu kommen die Regeln des Servers (`tools/lobby_test.py --rules`): 25 von 25, neu sind Startdaten mit Verzögerung und Schlüsseln, Ping in der Weiterleitung, Rückkehr mit Schlüssel, falscher Schlüssel, Ersatz einer noch nicht erkannten toten Verbindung, Host weg mit Raum erhalten, Host verlässt einen gestarteten Raum, Serverneustart mit Wiederaufbau und Trennung stiller Verbindungen. Der Direktmodus ohne Server läuft weiter (`net_minigame_matrix.py --scenes 7`).
+
+**Unterwegs gefunden:**
+- Die Warteschleife wartete erst bis zu 10 ms auf Daten und prüfte danach, ob der nächste Schritt schon da war. Das bremste jeden Schritt. Behoben; die Fälle laufen jetzt 10 bis 40 % schneller, das Nachholen beim neuen Programmstart dreimal so schnell.
+- Beim Schließen einer Verbindung gingen Nachrichten verloren, die kurz davor gekommen waren, darunter das Spielende des Hosts. Behoben.
+
+**Abweichungen von der Architektur:** Wiedereintritt ohne Zustandsübertragung: Der Host sendet die bisherigen Nachrichten, und der neue Prozess rechnet die Partie nach. Der Server hält keinen Zustand und muss nichts speichern; nach einem Neustart setzen die Spiele die Partie selbst fort. Weiterhin TCP, kein UDP mit ENet.
+
+**Grenzen:**
+- Nur auf einem PC mit dem eigenen Simulator getestet, nicht über das Internet.
+- Ab etwa 250 ms Weg Gast–Host reicht die Verzögerung von höchstens 15 Bildern nicht mehr. Das Spiel läuft dann langsamer: bei 340 ms etwa mit 70 %, bei 700 ms bis 1 s etwa mit 30 % der normalen Geschwindigkeit. Jede Eingabe wirkt erst 250 ms später.
+- Die Verzögerung wird einmal beim Start gewählt und passt sich danach nicht an.
+- Den Ping im Spiel misst nur, wer gerade Nachrichten liest; das geschieht einmal je Bild. Er kann daher bis zu 17 ms zu hoch sein.
+- Nachholen nach einem neuen Programmstart: etwa 133 Schritte/s, also gut doppelt so schnell wie das Spiel. Nach 40 Minuten Party wären das etwa 18 Minuten Warten für alle. Der Host bewahrt alle Nachrichten an jeden Gast auf, etwa 200 Byte je Schritt, also etwa 35 MB je Gast nach einer langen Party.
+- Der Host kann nicht zurückkehren. Endet sein Programm, warten die Gäste die Wartezeit ab und enden dann.
+- Fenster schließen gilt als absichtliches Verlassen und beendet die Partie für alle. Nur ein Programmende ohne Abmelden lässt die Rückkehr zu.
+- Die Fensterseite (Titel mit Ping, Wartegrund, Endmeldung, „Zurück in die Partie“, Nachholen ohne Bild) ist gebaut, aber nicht mit echten Eingaben getestet: Beim Testversuch lag zweimal ein anderes Fenster vorn, und das Testskript sendet dann nichts. Belegt sind dieselben Abläufe nur im Prozess ohne Fenster.
+- Wer den Code kennt, kann nach einem Serverneustart einen Raum mit diesem Code anlegen, bevor der echte Host zurück ist. Der echte Host wird dann abgewiesen.
 
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 
@@ -488,7 +543,7 @@ Nach den Korrekturen liefen die Spiele beim nächsten Lauf durch.
 | Würfel, Münzen, Sterne, Züge | Zustand aller Prozesse je Bild per Prüfsumme gleich; Werte aus dem Sim-Speicher, sobald ihre Adressen bekannt sind |
 | Minispiele | Pro Spiel Start, Ablauf mit Skript, gleiche Ergebnisse bei allen |
 | Abbruch und Wiedereintritt | Prozess beenden, neu verbinden, Prüfsumme wieder gleich |
-| Verzögerung | Eigener UDP-Proxy: 0, 50, 150, 300 ms, Jitter, Paketverlust |
+| Verzögerung | Eigener Proxy (`tools/netsim.py`, TCP, weil das Spiel TCP nutzt): 0, 50, 150, 300 ms, Jitter, späte Pakete als Verlust |
 | Betrug | Manipulierter Client sendet ungültige Daten; Server lehnt ab, Zustand unverändert |
 | Treue zum Original | Rekompilat gegen melonDS: RAM und Bild |
 

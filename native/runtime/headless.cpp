@@ -149,6 +149,18 @@ void watch_network_stall(const Cpu& c, u64 blocks) {
     std::printf("\n");
 }
 
+// Every 10 s of a network run: steps, pings, connections opened again.
+void print_net_status() {
+    static auto last = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::seconds(10)) return;
+    last = now;
+    const NetStats& stats = net_stats();
+    std::printf("net status: step %llu, %s, server %u ms, reconnects %llu, resent %llu\n",
+                static_cast<unsigned long long>(stats.steps), net_status_line().c_str(), stats.server_ping_ms,
+                static_cast<unsigned long long>(stats.reconnects), static_cast<unsigned long long>(stats.resent));
+}
+
 void print_hot_blocks() {
     std::vector<std::pair<u32, u32>> hits;
     for (const auto& [pc, count] : g_hot) hits.push_back({count, pc});
@@ -358,6 +370,14 @@ int run_lobby(const LobbyOptions& options, const std::string& name, NetSettings&
     net.relay = start.socket;
     net.relay_inbox = std::move(start.inbox);
     net.character = start.characters[size_t(start.slot)];
+    net.address = start.address;
+    net.port = start.port;
+    net.code = start.code;
+    net.slot = start.slot;
+    net.token = start.token;
+    net.tokens = start.tokens;
+    net.players = start.players;
+    net.input_delay = start.input_delay;
     if (net.role == NetRole::Guest) settings.boot_type = 2;
     std::printf("lobby: player %d of %d, %s\n", start.slot + 1, start.players, lobby::character_name(net.character));
     return 0;
@@ -407,6 +427,10 @@ void keep_step_frame(u64 step) {
 
 // --end-after-minigame 1: the run ends when the first minigame scene ends.
 bool g_end_after_minigame = false;
+// --leave-at-tick N: this player leaves the network game on purpose at game tick N, as with Esc and
+// "back to the main menu" in the window.
+u64 g_leave_tick = 0;
+std::string g_leave_file;  // --leave-file PATH: the same, as soon as PATH exists (looked at every 60 ticks)
 bool g_minigame_ended = false;
 u64 g_minigame_end_step = 0;  // the others still need steps from this player to see the end too
 
@@ -466,6 +490,8 @@ int main(int argc, char** argv) {
     MachineSettings settings;
     NetSettings net;
     LobbyOptions lobby_options;
+    int input_delay = -1;  // pictures; -1: the server's choice, or none on a direct connection
+    std::string rejoin_from;  // --rejoin FILE: back into a running game, from what --rejoin-file wrote
     for (int i = 2; i + 1 < argc; i += 2) {
         if (!std::strcmp(argv[i], "--lobby")) lobby_options.server = argv[i + 1];
         else if (!std::strcmp(argv[i], "--create")) lobby_options.create = argv[i + 1];
@@ -489,8 +515,14 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--wav")) g_wav_path = argv[i + 1];
         else if (!std::strcmp(argv[i], "--net-host")) { net.role = NetRole::Host; net.port = u16(std::atoi(argv[i + 1])); }
         else if (!std::strcmp(argv[i], "--net-guest")) { net.role = NetRole::Guest; net.port = u16(std::atoi(argv[i + 1])); }
+        else if (!std::strcmp(argv[i], "--input-delay")) input_delay = std::atoi(argv[i + 1]);
+        else if (!std::strcmp(argv[i], "--give-up")) net.give_up_seconds = std::atoi(argv[i + 1]);
+        else if (!std::strcmp(argv[i], "--rejoin-file")) net.rejoin_file = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--rejoin")) rejoin_from = argv[i + 1];
         else if (!std::strcmp(argv[i], "--force-mode")) g_force_mode = int(std::strtol(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--end-after-minigame")) g_end_after_minigame = std::atoi(argv[i + 1]) != 0;
+        else if (!std::strcmp(argv[i], "--leave-at-tick")) g_leave_tick = std::strtoull(argv[i + 1], nullptr, 0);
+        else if (!std::strcmp(argv[i], "--leave-file")) g_leave_file = argv[i + 1];
         else if (!std::strcmp(argv[i], "--exit-frames")) g_exit_frames = argv[i + 1];
         else if (!std::strcmp(argv[i], "--unlock-minigames")) g_unlock_minigames = std::atoi(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--name")) settings.player_name = argv[i + 1];
@@ -520,11 +552,21 @@ int main(int argc, char** argv) {
         print_hot_blocks();
     });
     net.name = settings.player_name;
-    if (!lobby_options.server.empty()) {
+    if (!rejoin_from.empty()) {
+        const std::string keep_file = net.rejoin_file;
+        if (!net_load_rejoin(rejoin_from, net)) {
+            std::printf("rejoin: cannot read %s\n", rejoin_from.c_str());
+            return 3;
+        }
+        if (net.rejoin_file.empty()) net.rejoin_file = keep_file.empty() ? rejoin_from : keep_file;
+        settings.boot_type = 2;
+        settings.player_name = net.name;
+    } else if (!lobby_options.server.empty()) {
         const int result = run_lobby(lobby_options, settings.player_name, net, settings);
         if (result != 0) return result;
         if (lobby_options.exit_after_start) return 0;
     }
+    if (input_delay >= 0) net.input_delay = input_delay;
     machine_boot(rom, settings);
     net_start(net);
     const bool net_running = net.role != NetRole::Off;
@@ -557,6 +599,18 @@ int main(int argc, char** argv) {
             std::printf("\n");
             print_hot_blocks();
             return 4;
+        }
+        static u64 leave_checked = 0;
+        bool leave_now = g_leave_tick != 0 && g_game_ticks >= g_leave_tick;
+        if (!g_leave_file.empty() && g_hw.frames >= leave_checked + 60) {
+            leave_checked = g_hw.frames;
+            leave_now = leave_now || std::filesystem::exists(g_leave_file);
+        }
+        if (leave_now) {
+            net_leave();
+            std::printf("left the game at game tick %llu, step %llu\n", static_cast<unsigned long long>(g_game_ticks),
+                        static_cast<unsigned long long>(net_stats().steps));
+            return 0;
         }
         if (g_end_after_minigame && g_minigame_ended && net_stats().steps >= g_minigame_end_step + 120) {
             std::printf("minigame ended at step %llu\n", static_cast<unsigned long long>(net_stats().steps));
@@ -591,7 +645,10 @@ int main(int argc, char** argv) {
             write_frame_if_wanted(dump, g_game_ticks);
         }
         if ((blocks & 0xFFF) == 0) ++g_hot[c.pc];
-        if (net_running) watch_network_stall(c, blocks);
+        if (net_running) {
+            watch_network_stall(c, blocks);
+            if ((blocks & 0xFFFFF) == 0) print_net_status();
+        }
         machine_step();
     }
     std::printf("reached stop address, pc=%08x\n", c.pc);

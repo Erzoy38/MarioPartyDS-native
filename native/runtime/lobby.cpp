@@ -59,6 +59,8 @@ void LobbyClient::connect(const std::string& address, std::uint16_t port, const 
     message_.clear();
     last_error_ = 0;
     name_ = name;
+    address_ = address;
+    port_ = port;
     if (!winsock_ready()) return fail("Netzwerk nicht verfügbar.");
     addrinfo hints{};
     hints.ai_family = AF_INET;
@@ -175,7 +177,12 @@ void LobbyClient::handle(std::uint8_t type, const std::vector<std::uint8_t>& bod
             const std::uint64_t sent = r.u64();
             if (!r.done()) return;
             const std::uint64_t now = std::uint64_t(now_seconds() * 1000.0);
-            ping_ms_ = int(std::min<std::uint64_t>(now - sent, 65535));
+            // The smallest of the last five: the way itself, without one slow answer.
+            recent_pings_[ping_count_++ % recent_pings_.size()] = int(std::min<std::uint64_t>(now - sent, 65535));
+            ping_ms_ = 65535;
+            for (std::size_t i = 0; i < std::min<std::size_t>(ping_count_, recent_pings_.size()); ++i) {
+                ping_ms_ = std::min(ping_ms_, recent_pings_[i]);
+            }
             return;
         }
         case kStarted: {
@@ -186,7 +193,15 @@ void LobbyClient::handle(std::uint8_t type, const std::vector<std::uint8_t>& bod
                 const std::uint32_t c = r.u8();
                 character = c < std::uint32_t(kCharacters) ? int(c) : -1;
             }
-            if (!r.ok) return fail("Ungültige Startnachricht.");
+            start_.input_delay = int(r.u8());
+            start_.token = r.u64();
+            if (start_.slot == 0) {
+                for (int i = 0; i < start_.players && i < kMaxPlayers; ++i) start_.tokens[size_t(i)] = r.u64();
+            }
+            if (!r.done()) return fail("Ungültige Startnachricht.");
+            start_.code = code_;
+            start_.address = address_;
+            start_.port = port_;
             std::printf("lobby: started as player %d of %d\n", start_.slot + 1, start_.players);
             phase_ = Phase::Started;
             return;

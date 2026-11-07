@@ -29,12 +29,14 @@ EXE = matrix.EXE
 ROM = matrix.ROM
 OUT = os.path.join("run", "lobbytest")
 
-HELLO, CREATE, JOIN, PICK, READY, START, LEAVE, PING = 1, 2, 3, 4, 5, 6, 7, 8
-ROOM, ERROR, STARTED, PONG, LEFT = 20, 21, 22, 23, 24
-RELAY_FROM, RELAY_TO, RELAY_GONE = 30, 31, 32
+VERSION = 2
+HELLO, CREATE, JOIN, PICK, READY, START, LEAVE, PING, RESUME = 1, 2, 3, 4, 5, 6, 7, 8, 9
+ROOM, ERROR, STARTED, PONG, LEFT, RESUMED = 20, 21, 22, 23, 24, 25
+RELAY_FROM, RELAY_TO, RELAY_GONE, RELAY_BACK = 30, 31, 32, 33
 ERRORS = {1: "bad version", 2: "bad name", 3: "unknown code", 4: "room full", 5: "already started",
           6: "character taken", 7: "not host", 8: "not enough players", 9: "not ready", 10: "expired",
-          11: "host left", 12: "bad message", 13: "not in room", 14: "left room"}
+          11: "host left", 12: "bad message", 13: "not in room", 14: "left room", 15: "try again",
+          16: "bad token"}
 CHARACTERS = ["Mario", "Luigi", "Wario", "Yoshi", "Peach", "Daisy", "Waluigi", "Toad"]
 
 
@@ -43,7 +45,7 @@ class Client:
         self.s = socket.create_connection(("127.0.0.1", port), timeout=5)
         self.inbox = b""
         if name is not None:
-            self.send(HELLO, struct.pack("<H", 1) + bytes([len(name)]) + name.encode())
+            self.send(HELLO, struct.pack("<H", VERSION) + bytes([len(name)]) + name.encode())
 
     def send(self, kind, body=b""):
         self.s.sendall(struct.pack("<I", len(body) + 1) + bytes([kind]) + body)
@@ -51,7 +53,7 @@ class Client:
     def send_raw(self, data):
         self.s.sendall(data)
 
-    def receive(self, wait=3.0):
+    def receive(self, wait=3.0, pongs=False):
         """Next message (type, body), or None after `wait` seconds."""
         end = time.time() + wait
         while True:
@@ -60,7 +62,7 @@ class Client:
                 if len(self.inbox) >= 4 + length:
                     kind, body = self.inbox[4], self.inbox[5:4 + length]
                     self.inbox = self.inbox[4 + length:]
-                    if kind == PONG:
+                    if kind == PONG and not pongs:
                         continue
                     return kind, body
             left = end - time.time()
@@ -318,16 +320,164 @@ def relay_passes_game_messages(port):
     assert body == bytes([1]), body
 
 
+def parse_started(body):
+    slot, count = body[0], body[1]
+    delay = body[6]
+    token = struct.unpack_from("<Q", body, 7)[0]
+    tokens = [struct.unpack_from("<Q", body, 15 + 8 * i)[0] for i in range(count)] if slot == 0 else []
+    assert len(body) == 15 + 8 * len(tokens), body
+    return {"slot": slot, "count": count, "delay": delay, "token": token, "tokens": tokens}
+
+
+def started_pair(port, *extra_guests):
+    host, code = create_room(port, "Host", 0)
+    guests = []
+    for i, name in enumerate(("G1",) + extra_guests):
+        guest = join(port, code, name, i + 1)
+        guest.expect(ROOM)
+        guest.send(READY, b"\x01")
+        guests.append(guest)
+    host.latest_room()
+    host.send(START)
+    started = [parse_started(host.expect(STARTED))] + [parse_started(g.expect(STARTED)) for g in guests]
+    return host, guests, code, started
+
+
+def resume(port, code, slot, token, name="Back", tokens=None):
+    c = Client(port, name)
+    body = code.encode() + bytes([slot]) + struct.pack("<Q", token)
+    if tokens is not None:
+        body += bytes([len(tokens)]) + b"".join(struct.pack("<Q", t) for t in tokens)
+    c.send(RESUME, body)
+    return c
+
+
+@rule
+def start_gives_delay_and_tokens(port):
+    host, guests, code, started = started_pair(port)
+    assert started[0]["slot"] == 0 and started[1]["slot"] == 1, started
+    assert 1 <= started[0]["delay"] <= 15 and started[0]["delay"] == started[1]["delay"], started
+    assert started[0]["tokens"] == [started[0]["token"], started[1]["token"]], started
+    assert started[0]["token"] != started[1]["token"], started
+
+
+@rule
+def ping_is_answered_in_the_relay(port):
+    host, guests, code, started = started_pair(port)
+    guests[0].send(PING, struct.pack("<QH", 1234, 5))
+    got = guests[0].receive(pongs=True)
+    assert got == (PONG, struct.pack("<Q", 1234)), got
+    host.send(RELAY_TO, bytes([1, 5]) + b"still")
+    assert guests[0].receive() == (5, b"still")
+
+
+@rule
+def guest_comes_back_with_its_token(port):
+    host, guests, code, started = started_pair(port)
+    guests[0].close()
+    assert host.expect(RELAY_GONE) == bytes([1])
+    back = resume(port, code, 1, started[1]["token"])
+    assert back.expect(RESUMED) == bytes([1])
+    assert host.expect(RELAY_BACK) == bytes([1])
+    back.send(4, b"again")
+    assert host.expect(RELAY_FROM) == bytes([1, 4]) + b"again"
+    host.send(RELAY_TO, bytes([1, 5]) + b"step")
+    assert back.receive() == (5, b"step")
+
+
+@rule
+def wrong_token_is_refused(port):
+    host, guests, code, started = started_pair(port)
+    resume(port, code, 1, started[1]["token"] ^ 2).expect_error(16)
+    resume(port, code, 0, started[1]["token"]).expect_error(16)
+    resume(port, code, 3, started[1]["token"]).expect_error(16)  # no player there
+    resume(port, "ZZZZZZ", 1, started[1]["token"]).expect_error(15)
+
+
+@rule
+def coming_back_replaces_a_connection_not_yet_noticed(port):
+    host, guests, code, started = started_pair(port)
+    back = resume(port, code, 1, started[1]["token"])
+    assert back.expect(RESUMED) == bytes([1])
+    got = guests[0].receive()
+    assert got == ("closed", b""), got
+    assert host.expect(RELAY_BACK) == bytes([1])
+    back.send(4, b"new")
+    assert host.expect(RELAY_FROM) == bytes([1, 4]) + b"new"
+
+
+@rule
+def host_drop_keeps_the_room(port):
+    host, guests, code, started = started_pair(port)
+    host.close()
+    assert guests[0].expect(RELAY_GONE) == bytes([0])
+    guests[0].send(4, b"lost")  # nobody to pass it to
+    back = resume(port, code, 0, started[0]["token"], "Host", started[0]["tokens"])
+    assert back.expect(RESUMED) == bytes([0])
+    assert guests[0].expect(RELAY_BACK) == bytes([0])
+    guests[0].send(4, b"found")
+    assert back.expect(RELAY_FROM) == bytes([1, 4]) + b"found"
+
+
+@rule
+def host_leave_ends_a_started_room(port):
+    host, guests, code, started = started_pair(port)
+    host.send(LEAVE)
+    got = guests[0].receive()
+    assert got == ("closed", b""), got
+    resume(port, code, 1, started[1]["token"]).expect_error(10)
+
+
+def server_restart_rebuilds_the_room(port):
+    server = start_server(port)
+    try:
+        host, guests, code, started = started_pair(port)
+        server.kill()
+        server.wait()
+        assert guests[0].receive() == ("closed", b"")
+        assert host.receive() == ("closed", b"")
+        server = start_server(port)
+        resume(port, code, 1, started[1]["token"]).expect_error(15)  # the host is not back yet
+        resume(port, code, 0, started[0]["token"], "Host", [1, 2]).expect_error(15)  # tokens do not fit
+        new_host = resume(port, code, 0, started[0]["token"], "Host", started[0]["tokens"])
+        assert new_host.expect(RESUMED) == bytes([0])
+        new_guest = resume(port, code, 1, started[1]["token"])
+        assert new_guest.expect(RESUMED) == bytes([1])
+        assert new_host.expect(RELAY_BACK) == bytes([1])
+        new_guest.send(4, b"after")
+        assert new_host.expect(RELAY_FROM) == bytes([1, 4]) + b"after"
+        resume(port, code, 1, started[0]["token"]).expect_error(16)
+        # A new room never gets the code of the one built again.
+        for _ in range(20):
+            _, other = create_room(port, "Other", 0)
+            assert other != code
+    finally:
+        server.kill()
+
+
+def silent_connection_is_dropped(port):
+    server = start_server(port, "--idle-timeout", "2")
+    try:
+        host, guests, code, started = started_pair(port)
+        for _ in range(6):  # the host keeps talking, the guest says nothing
+            host.send(PING, struct.pack("<QH", 1, 1))
+            time.sleep(0.5)
+        got = host.expect(RELAY_GONE, wait=3)
+        assert got == bytes([1]), got
+    finally:
+        server.kill()
+
+
 @rule
 def wrong_version_and_names_are_refused(port):
     c = Client(port)
     c.send(HELLO, struct.pack("<H", 99) + b"\x01A")
     c.expect_error(1)
     c = Client(port)
-    c.send(HELLO, struct.pack("<H", 1) + b"\x0bABCDEFGHIJK")
+    c.send(HELLO, struct.pack("<H", VERSION) + b"\x0bABCDEFGHIJK")
     c.expect_error(2)
     c = Client(port)
-    c.send(HELLO, struct.pack("<H", 1) + b"\x00")
+    c.send(HELLO, struct.pack("<H", VERSION) + b"\x00")
     c.expect_error(2)
     c = Client(port)
     c.send(CREATE, b"\x00")
@@ -388,12 +538,13 @@ def run_rules(port):
                 print(f"FAIL  {function.__name__}: {error}")
     finally:
         server.kill()
-    try:
-        expired_code(port + 1)
-        print("ok    expired_code")
-    except Exception as error:  # noqa: BLE001
-        failures += 1
-        print(f"FAIL  expired_code: {error}")
+    for offset, function in ((1, expired_code), (2, server_restart_rebuilds_the_room), (3, silent_connection_is_dropped)):
+        try:
+            function(port + offset)
+            print(f"ok    {function.__name__}")
+        except Exception as error:  # noqa: BLE001
+            failures += 1
+            print(f"FAIL  {function.__name__}: {error}")
     return failures
 
 
