@@ -334,7 +334,7 @@ Der ARM7-Ersatz bedient die PXI-Kanäle 5 (Uhr), 6 (Touch), 7 (Sound), 8 (Strom 
 - Nach einer Abkürzung landet das Spiel am Ende eines Minispiels im internen Entwicklermenü „MP-NDS MENU“. Das ist Spielverhalten, kein Fehler: Ohne echtes Menü weiß es nicht, wohin zurück.
 - Fehlender Code wird weiter erst beim Ausführen gefunden. Diese Party brauchte rund 25 Nachträge, die Matrix etwa 140.
 
-### Zwischenstand Phase 8 [aus dem Code gelesen, ein Startversuch]
+### Phase 8: Analyse vorab [aus dem Code gelesen]
 
 **Spiel-Schnittstelle zum Netz (Glue, 0x02026B14 bis 0x02028100):** klein und klar.
 
@@ -354,9 +354,42 @@ Der ARM7-Ersatz bedient die PXI-Kanäle 5 (Uhr), 6 (Touch), 7 (Sound), 8 (Strom 
 
 **Start als Download-Gast** (Bootart 2, neue Option `--boot-type 2`): Das Spiel bleibt in Szene 0 und wartet auf PXI-Kanal 15. Der gehört vermutlich zum Funktreiber des ARM7. Gäste laden im Original Overlays und Dateien über Funk vom Host (WFS, Prüfsummen ab `0x020BD408`). 27 Stellen im Code unterscheiden die Bootart.
 
-**Folgerung, noch nicht entschieden:** Zwei Wege.
-1. ARM7-Funktreiber (WM über PXI 10 und 15) nachbilden. Der Spielcode bleibt dabei ganz original, inklusive Download und WFS. Dafür muss das Netz Funkpakete tragen. Groß, aber allgemein.
-2. WH, MB und WFS auf Ebene ihrer Funktionen ersetzen. Gäste lesen Dateien dann aus der eigenen ROM. Kleiner je Baustein, braucht aber für jede ersetzte Funktion den belegten Ablauf.
+**Entschieden: Weg 2** (WH, MB und WFS auf Ebene ihrer Funktionen ersetzen; Gäste lesen aus der eigenen ROM). Weg 1 wäre der ARM7-Funktreiber gewesen.
+
+### Ergebnis Phase 8 [gemessen, 4 Prozesse auf einem PC, TCP über localhost]
+
+**Aufbau (`native/runtime/net.cpp`):** Eingriffe an Funktionsanfängen des Spiels, kein geänderter Spielcode.
+
+| Baustein | Ersetzt durch |
+|---|---|
+| MB (Download Play, Host) | Ereignisse 2, 10, 14, 7, 9, 12 an den spieleigenen Handler `0x02017920`, je Gast nacheinander |
+| WH-Zustand, Verbinden, Ende | eigene Zustände in `0x020D1AE0`; Gast wartet in `0x020238B0`, bis der Host ihn aufnimmt |
+| Datenaustausch `0x02024D44` | Lockstep: Gäste senden ihren Datensatz (0x26 Bytes), der Host verteilt alle vier; alle warten auf jeden Schritt |
+| Port-Daten `0x02024410` / Empfänger `0x02024CC4` | Nachricht an die anderen; Zustellung an den Empfänger des Spiels im nächsten Tick, Sende-Rückmeldung ebenso |
+| WFS | Stubs; der Gast startet sein Dateisystem wie von Karte (Bootart nur dafür 1, Kartenzugriff `0x0215B540` an) |
+| Download-Startdaten | Host schickt beim Beitritt die Sprache; der Gast legt Host-BssDesc (`0x027FFC42`, GGID `0x390`) und Parameter (`0x027FFBE0`) ab |
+
+**Belegt:**
+
+| Prüfung | Ergebnis |
+|---|---|
+| Lobby | Host sieht Guest1 bis Guest3 in „Find Players“, Gäste zeigen „You are P2/P3/P4“ |
+| Menüs | Gäste folgen der Auswahl des Hosts („P1 is making selections“); „Duel Battle“ bei 4 Spielern gesperrt |
+| Figurenwahl | jeder wählt selbst (Mario, Luigi, Peach, Yoshi), auf allen vier gleich |
+| Gleichschritt | Szenenwechsel bei allen beim selben Schritt; drei gleiche Läufe mit gleicher Prüfsumme |
+| Party | Wiggler's Garden, Battle Royale, 10 Runden: bis „Party Results“ (Szene 95) bei Host-Tick 172.811, 178.774 Schritte, 13 Minispiele, ohne Abbruch, 46 min Laufzeit |
+| Endstand | auf allen vier gleich: Peach (Guest2) 1 Stern 19 Münzen, Yoshi 47, Mario 36, Luigi 7 |
+| Bild an gleichen Schritten | Unterschiede nur bei eigener Ansicht (eigenes Auto, eigene Markierung, Speicherhinweis des Hosts); Ergebnistafeln gleich |
+| Hauptspeicher an gleichen Schritten | 9.200 bis 11.200 von 4 MB Bytes verschieden, über die Party ohne Anstieg |
+
+**Werkzeuge:** `--net-host PORT`, `--net-guest PORT`, `--boot-type 2`, `--dump-step N`, `tools/compare_net_dumps.py`. Ein Spieler, der 10 s keinen Schritt macht, meldet seine Stelle („STALL“).
+
+**Grenzen:**
+- Nur TCP auf einem Rechner. Kein Internet, keine Verzögerung, kein Paketverlust, kein Wiederverbinden (Phasen 9 bis 11).
+- Die verschiedenen Bytes im Hauptspeicher sind nicht einzeln zugeordnet. Münzen und Sterne werden noch nicht aus dem Speicher verglichen, nur über die Ergebnistafeln im Bild.
+- Zweimal blieben Gäste früh über 20 s stehen; danach nicht wieder auslösbar. Ursache offen.
+- Eingaben nur gescriptet (A und Touch alle 45 Ticks). Minispiele wurden nicht gezielt gespielt.
+- Gast-Spielernummern entstehen aus der Reihenfolge des Verbindens und sind nicht fest.
 
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 
