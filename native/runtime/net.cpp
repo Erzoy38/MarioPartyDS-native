@@ -375,6 +375,7 @@ bool wh_hook(Cpu& c) {
                 send_message(g_host, kBlock, data);
             }
             ++g_stats.blocks;
+            std::printf("net: sends %u bytes at step %llu\n", c.r[1], static_cast<unsigned long long>(g_stats.steps));
             // WM reports the send later; the game marks the send as running only after this call.
             if (c.r[2] != 0) g_send_done.push_back(c.r[2]);
             finish(c, 1);
@@ -510,7 +511,10 @@ void deliver_blocks() {
         g_blocks.pop_front();
         if (block.data.size() > kBlockLimit) runtime_abort("network: port data too large", u32(block.data.size()));
         for (u32 i = 0; i < block.data.size(); ++i) wr8(kBlockBuffer + i, block.data[i]);
+        std::printf("net: port data from %u, %zu bytes, to %08x at step %llu\n", block.aid, block.data.size(), receive,
+                    static_cast<unsigned long long>(g_stats.steps));
         call_game(receive, block.aid, kBlockBuffer, u32(block.data.size()));
+        std::printf("net: delivered\n");
     }
 }
 
