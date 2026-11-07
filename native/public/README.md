@@ -66,6 +66,6 @@ Einzelheiten stehen in `src/lobby_protocol.h`.
 
 ## Urheberrecht
 
-Copyright (c) 2026 Ersin (GitHub: Erzoy38). Alle Rechte vorbehalten.
+Copyright (c) 2026 Erzoy38 (https://github.com/Erzoy38). Alle Rechte vorbehalten.
 
 Ansehen ist erlaubt. Kopieren, Weitergeben, Verändern, darauf Aufbauen oder als eigene Arbeit Ausgeben ist ohne schriftliche Erlaubnis nicht gestattet. Einzelheiten stehen in `LICENSE`.

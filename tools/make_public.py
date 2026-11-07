@@ -31,7 +31,7 @@ FILES = [
     ("LICENSE", "LICENSE"),
 ]
 # Put at the top of every source file in public/.
-NOTICE = "Copyright (c) 2026 Ersin (GitHub: Erzoy38). Alle Rechte vorbehalten. Siehe LICENSE."
+NOTICE = "Copyright (c) 2026 Erzoy38 (https://github.com/Erzoy38). Alle Rechte vorbehalten. Siehe LICENSE."
 COMMENT = {".cpp": "// ", ".h": "// ", ".py": "# ", ".ps1": "# "}
 # Game addresses (main RAM, overlays), the unpacked program, ROM and save files.
 FORBIDDEN = re.compile(r"0x0[0-9A-Fa-f]{7}|\bov\d{3}\b|overlay|arm9|arm7|unpacked|\.nds\b|\.sav\b|recomp|"

@@ -1,7 +1,7 @@
 Mario Party DS für Windows
 ==========================
 
-Copyright (c) 2026 Ersin (GitHub: Erzoy38). Alle Rechte vorbehalten. Wer das Paket direkt vom
+Copyright (c) 2026 Erzoy38 (https://github.com/Erzoy38). Alle Rechte vorbehalten. Wer das Paket direkt vom
 Urheber bekommen hat, darf es zum Spielen benutzen. Weitergeben, Verändern oder als eigene Arbeit
 ausgeben ist ohne Erlaubnis nicht gestattet. Einzelheiten in LIZENZ.txt.
 
