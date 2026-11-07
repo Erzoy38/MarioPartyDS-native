@@ -25,10 +25,18 @@ constexpr u32 kNetContext = 0x020D45A0;   // +0 wireless powered (s8)
 constexpr u32 kMbState = 0x020C9234;      // +8 state, +0xA.. +0x14 bitmaps per download stage
 constexpr u32 kMbCallback = 0x02017920;   // the game's download event handler (aid, event, info)
 constexpr u32 kRecordSize = 0x26;
+constexpr u32 kBootType = 0x027FFC40;     // 1 card, 2 download play
+constexpr u32 kCardEnabled = 0x0215B540;  // card access allowed (CARD_Enable)
+constexpr u32 kParentBssDesc = 0x027FFC42;
+constexpr u32 kDownloadParameter = 0x027FFBE0;
+constexpr u32 kGgid = 0x00000390;  // the multiplayer host's group id (0x02002030); 0x3FFF15 leads to the debug menu
+constexpr u32 kLanguage = 0x020C9210;     // game language, set in game_init
 // Free space in main RAM that the game does not use: the ARM7's area, which nothing runs in here.
 constexpr u32 kScratch = 0x023F8000;
 constexpr u32 kSharedRecords = kScratch + 0x100;  // 4 records, handed out by the shared-data getter
 constexpr u32 kUserInfo = kScratch + 0x200;       // a guest's name, as MB hands it to the game
+constexpr u32 kBlockBuffer = kScratch + 0x400;    // data sent through a port, as the receiver sees it
+constexpr u32 kBlockLimit = 0x1000;
 
 enum WhState : u32 { kStop = 0, kIdle = 1, kBusy = 3, kDataSharing = 5, kMeasure = 7 };
 enum MbEvent : u32 {
@@ -37,11 +45,12 @@ enum MbEvent : u32 {
 };
 
 NetSettings g_settings;
+u32 g_own_aid = 0;  // guest: the player number the host gave
 NetStats g_stats;
 bool g_started = false;
 
 // --- Transport: TCP on the local machine for now; length-prefixed messages ---
-enum Message : u8 { kHello = 1, kWelcome = 2, kJoined = 3, kRecord = 4, kStep = 5 };
+enum Message : u8 { kHello = 1, kWelcome = 2, kJoined = 3, kRecord = 4, kStep = 5, kBlock = 6 };
 
 SOCKET g_listen = INVALID_SOCKET;
 SOCKET g_host = INVALID_SOCKET;  // guest side
@@ -58,6 +67,14 @@ struct Guest {
 };
 std::map<u32, Guest> g_guests;  // by aid
 
+// Port data (WH send) that has arrived and waits for the game's receive callback: sender aid, bytes.
+struct Block {
+    u32 aid;
+    std::vector<u8> data;
+};
+std::deque<Block> g_blocks;
+std::vector<u32> g_send_done;  // callbacks of sends, called on the next tick
+
 void send_message(SOCKET s, u8 type, const std::vector<u8>& body) {
     std::vector<u8> frame(5 + body.size());
     const u32 length = u32(body.size() + 1);
@@ -67,7 +84,7 @@ void send_message(SOCKET s, u8 type, const std::vector<u8>& body) {
     size_t sent = 0;
     while (sent < frame.size()) {
         const int n = send(s, reinterpret_cast<const char*>(frame.data() + sent), int(frame.size() - sent), 0);
-        if (n <= 0) runtime_abort("network: send failed", u32(WSAGetLastError()));
+        if (n <= 0) runtime_abort("network: send failed, at step", u32(g_stats.steps));
         sent += size_t(n);
     }
 }
@@ -93,12 +110,12 @@ bool read_message(SOCKET s, std::vector<u8>& inbox, u8& type, std::vector<u8>& b
         timeval long_wait{20, 0};  // a player gone for 20 s ends the run for now (phase 11 handles it)
         const int ready = select(0, &set, nullptr, nullptr, wait_ms < 0 ? &long_wait : &timeout);
         if (ready == 0) {
-            if (wait_ms < 0) runtime_abort("network: nothing from the other side for 20 s", 0);
+            if (wait_ms < 0) runtime_abort("network: nothing from the other side for 20 s, at step", u32(g_stats.steps));
             return false;
         }
         char buffer[4096];
         const int n = recv(s, buffer, sizeof buffer, 0);
-        if (n <= 0) runtime_abort("network: connection closed", u32(WSAGetLastError()));
+        if (n <= 0) runtime_abort("network: connection closed, at step", u32(g_stats.steps));
         inbox.insert(inbox.end(), buffer, buffer + n);
     }
 }
@@ -182,9 +199,26 @@ void host_accept() {
         read_message(s, guest.inbox, type, body, -1);
         if (type != kHello) runtime_abort("network: guest did not say hello", type);
         guest.name.assign(body.begin(), body.end());
-        send_message(s, kWelcome, {u8(aid)});
+        // What a download boot leaves to the guest: its aid and the host's download parameter, whose
+        // first byte is the game language the host chose (0x020C9210, read back at 0x0201A8B8).
+        send_message(s, kWelcome, {u8(aid), rd8(kLanguage)});
         std::printf("net: guest %u \"%s\" is here\n", aid, guest.name.c_str());
     }
+}
+
+// A download boot leaves the parent's BssDesc at 0x027FFC42 (read by 0x020756DC: the GGID is the
+// first four bytes of the SSID, the TGID the next two) and a 32-byte download parameter at 0x027FFBE0.
+void write_download_boot(u8 language) {
+    for (u32 i = 0; i < 0x3C; ++i) wr8(kParentBssDesc + i, 0);
+    wr16(kParentBssDesc, 0x3C / 2);                                         // length in halfwords
+    for (u32 i = 0; i < 6; ++i) wr8(kParentBssDesc + 4 + i, u8(0x10 + i));  // the host's address
+    wr16(kParentBssDesc + 0xA, 8);                                          // SSID length
+    wr16(kParentBssDesc + 0xC, u16(kGgid & 0xFFFF));  // halfword-aligned only, so not one wr32
+    wr16(kParentBssDesc + 0xE, u16(kGgid >> 16));
+    wr16(kParentBssDesc + 0x10, 1);                                         // TGID
+    wr16(kParentBssDesc + 0x36, 1);                                         // channel
+    for (u32 i = 0; i < 0x20; ++i) wr8(kDownloadParameter + i, 0);
+    wr8(kDownloadParameter, language);
 }
 
 // --- Native replacements ---
@@ -233,12 +267,18 @@ bool host_hook(Cpu& c) {
     }
 }
 
+u32 g_fs_start_return = 0;  // where the guest's FS start-up returns to; the boot type is 1 till then
+
 bool wh_hook(Cpu& c) {
     switch (c.pc) {
         case 0x0200932C:  // file system start-up, which a download guest leaves to WFS
             if (g_settings.role != NetRole::Guest) return false;
-            // Run the card start-up instead: the guest has the ROM. This enters the function as
-            // usual (push {r3,lr}) and goes on where it would for a card start.
+            // Run the card start-up instead: the guest has the ROM. The SDK's FS start-up also skips
+            // the ROM archive on a download boot (0x020692A0), so it sees a card boot until this
+            // function returns. Entered as usual (push {r3,lr}), on where a card start goes on.
+            g_fs_start_return = c.r[14];
+            wr16(kBootType, 1);
+            wr32(kCardEnabled, 1);  // CARD_Init leaves card access off on a download boot (0x0206E5E4)
             c.r[13] -= 8;
             wr32(c.r[13], c.r[3]);
             wr32(c.r[13] + 4, c.r[14]);
@@ -300,6 +340,7 @@ bool wh_hook(Cpu& c) {
                 set_bitmap(bitmap);
                 break;
             }
+            wr16(kWhState, u16(g_own_aid));  // WH_Initialize cleared it
             set_wh_state(kDataSharing);
             std::printf("net: taken in, players %#x\n", rd16(kWhState + 0xE));
             finish(c, 1);
@@ -317,6 +358,26 @@ bool wh_hook(Cpu& c) {
             const u32 aid = c.r[0];
             const u16 bitmap = rd16(kWhState + 0xE);
             finish(c, (aid < 4 && (bitmap & (1u << aid))) ? kSharedRecords + aid * kRecordSize : 0);
+            return true;
+        }
+        case 0x02024CC4:  // sets the receive callback of the data port (r0, 0 = none)
+            wr32(kWhState + 0x14, c.r[0]);
+            finish(c, 0);
+            return true;
+        case 0x02024410: {  // sends r1 bytes at r0 through the port; r2 is called once it is out
+            std::vector<u8> data(c.r[1]);
+            for (u32 i = 0; i < c.r[1]; ++i) data[i] = rd8(c.r[0] + i);
+            if (g_settings.role == NetRole::Host) {
+                for (auto& [aid, guest] : g_guests) {
+                    if (guest.connected) send_message(guest.socket, kBlock, data);
+                }
+            } else {
+                send_message(g_host, kBlock, data);
+            }
+            ++g_stats.blocks;
+            // WM reports the send later; the game marks the send as running only after this call.
+            if (c.r[2] != 0) g_send_done.push_back(c.r[2]);
+            finish(c, 1);
             return true;
         }
         default: return false;
@@ -350,6 +411,7 @@ bool step_hook(Cpu& c) {
                 std::vector<u8> body;
                 read_message(guest.socket, guest.inbox, type, body, -1);
                 if (type == kRecord) guest.records.push_back(body);
+                else if (type == kBlock) g_blocks.push_back({aid, body});
             }
             std::copy(guest.records.front().begin(), guest.records.front().end(), records.begin() + aid * kRecordSize);
             guest.records.pop_front();
@@ -367,6 +429,10 @@ bool step_hook(Cpu& c) {
             u8 type;
             std::vector<u8> body;
             read_message(g_host, g_host_inbox, type, body, -1);
+            if (type == kBlock) {
+                g_blocks.push_back({0, body});
+                continue;
+            }
             if (type == kStep) {
                 u16 bitmap;
                 std::memcpy(&bitmap, body.data(), 2);
@@ -412,22 +478,45 @@ void net_start(const NetSettings& settings) {
         std::vector<u8> body;
         read_message(g_host, g_host_inbox, type, body, -1);
         if (type != kWelcome) runtime_abort("network: no welcome", type);
+        g_own_aid = body[0];
         wr16(kWhState, body[0]);
-        std::printf("net: guest, player %u\n", body[0]);
+        write_download_boot(body[1]);
+        std::printf("net: guest, player %u, language %u\n", body[0], body[1]);
     }
     g_started = true;
 }
 
 bool net_hook(Cpu& c) {
     if (!g_started) return false;
+    if (g_fs_start_return != 0 && (c.pc | c.thumb) == g_fs_start_return) {
+        wr16(kBootType, 2);
+        g_fs_start_return = 0;
+    }
     if (c.pc < 0x02009000 || c.pc > 0x02080000) return false;
     if (g_settings.role == NetRole::Host && host_hook(c)) return true;
     if (wh_hook(c)) return true;
     return step_hook(c);
 }
 
+// Hands arrived port data to the game, as WM's port callback would.
+void deliver_blocks() {
+    const std::vector<u32> done = std::move(g_send_done);
+    g_send_done.clear();
+    for (u32 callback : done) call_game(callback, 1, 0, 0);
+    while (!g_blocks.empty()) {
+        const u32 receive = wh(0x14);
+        if (receive == 0) return;  // nobody listens yet; keep it
+        const Block block = g_blocks.front();
+        g_blocks.pop_front();
+        if (block.data.size() > kBlockLimit) runtime_abort("network: port data too large", u32(block.data.size()));
+        for (u32 i = 0; i < block.data.size(); ++i) wr8(kBlockBuffer + i, block.data[i]);
+        call_game(receive, block.aid, kBlockBuffer, u32(block.data.size()));
+    }
+}
+
 void net_tick() {
     if (!g_started) return;
+    deliver_blocks();
     if (g_settings.role == NetRole::Host) {
         host_accept();
         // Download play: one stage per tick, in the order the game expects its events. The stage moves
@@ -469,6 +558,7 @@ void net_tick() {
             u16 bitmap;
             std::memcpy(&bitmap, body.data(), 2);
             set_bitmap(bitmap);
+            wr16(kWhState, u16(g_own_aid));
             set_wh_state(kDataSharing);
             std::printf("net: taken in, players %#x\n", bitmap);
         }

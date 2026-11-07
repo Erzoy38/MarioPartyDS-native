@@ -32,6 +32,7 @@ void net_tick();
 
 struct NetStats {
     u64 steps = 0;
+    u64 blocks = 0;  // port data sent (WH send)
     u32 players = 0;
     u32 checksum = 0;  // over the records of the last step
 };

@@ -287,6 +287,8 @@ int main(int argc, char** argv) {
 
     Cpu& c = machine_cpu();
     u64 blocks = 0;
+    u64 last_dumped_tick = ~0ull;
+    u64 last_frame_tick = ~0ull;
     while (c.pc != stop) {
         if (blocks >= max_blocks) {
             std::printf("stopped: block limit, %llu frames, line %u, halted %d\n",
@@ -297,8 +299,8 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(sound_stats().notes), sound_stats().active_players,
                         sound_stats().active_channels, static_cast<unsigned long long>(sound_stats().unknown_commands));
             write_wav();
-            std::printf("net: %llu steps, %u players, last checksum %08x\n",
-                        static_cast<unsigned long long>(net_stats().steps), net_stats().players, net_stats().checksum);
+            std::printf("net: %llu steps, %llu blocks, %u players, last checksum %08x\n",
+                        static_cast<unsigned long long>(net_stats().steps), static_cast<unsigned long long>(net_stats().blocks), net_stats().players, net_stats().checksum);
             std::printf("pc=%08x cpsr=%08x lr=%08x sp=%08x stack:", c.pc, c.cpsr(), c.r[14], c.r[13]);
             for (u32 i = 0, shown = 0; i < 128 && shown < 12; ++i) {
                 const u32 value = rd32(c.r[13] + i * 4);
@@ -315,12 +317,17 @@ int main(int argc, char** argv) {
         apply_forced_mode(c);
         watch_progress(c);
         if (!g_wav_path.empty() && (blocks & 0xFFFF) == 0) collect_sound();
-        if (c.pc == kGameTick && g_dump_ticks.count(g_game_ticks) != 0) {
+        // Once per tick: while the CPU waits for an interrupt, pc stays at the tick start.
+        if (c.pc == kGameTick && g_dump_ticks.count(g_game_ticks) != 0 && g_game_ticks != last_dumped_tick) {
+            last_dumped_tick = g_game_ticks;
             write_all_dumps(dump + "/tick" + std::to_string(g_game_ticks));
             std::printf("dumped at game tick %llu\n", static_cast<unsigned long long>(g_game_ticks));
             gpu3d_print_last_list();
         }
-        if (c.pc == kGameTick) write_frame_if_wanted(dump, g_game_ticks);
+        if (c.pc == kGameTick && g_game_ticks != last_frame_tick) {
+            last_frame_tick = g_game_ticks;
+            write_frame_if_wanted(dump, g_game_ticks);
+        }
         if ((blocks & 0xFFF) == 0) ++g_hot[c.pc];
         machine_step();
     }
