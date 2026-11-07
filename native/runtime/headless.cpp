@@ -10,6 +10,7 @@
 #include "hw.h"
 #include "machine.h"
 #include "memory.h"
+#include "net.h"
 #include "ppu.h"
 #include "sound.h"
 
@@ -213,7 +214,9 @@ void watch_progress(const Cpu& c) {
     if (c.pc == kGameTick) apply_script(g_game_ticks + 1);
     if (!g_watched.empty()) {
         const auto hit = g_watched.find(c.pc);
-        if (hit != g_watched.end()) ++hit->second;
+        if (hit != g_watched.end() && hit->second++ == 0) {
+            std::printf("watched %08x first reached at game tick %llu\n", c.pc, static_cast<unsigned long long>(g_game_ticks));
+        }
     }
     if (c.pc == kGameTick) ++g_game_ticks;
     const s16 scene = s16(rd16(kModeState));
@@ -228,6 +231,7 @@ void watch_progress(const Cpu& c) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // a process stopped from outside still leaves its log
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <rom.nds> --stop ADDR --dump FOLDER [--max-blocks N]\n", argv[0]);
         return 2;
@@ -236,6 +240,7 @@ int main(int argc, char** argv) {
     u64 max_blocks = 2000000000ULL;
     std::string dump;
     MachineSettings settings;
+    NetSettings net;
     for (int i = 2; i + 1 < argc; i += 2) {
         if (!std::strcmp(argv[i], "--stop")) stop = u32(std::strtoul(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--dump")) dump = argv[i + 1];
@@ -247,6 +252,8 @@ int main(int argc, char** argv) {
             if (std::sscanf(argv[i + 1], "%llu:%llu", &from, &to) == 2) g_frame_ranges.push_back({from, to});
         }
         else if (!std::strcmp(argv[i], "--wav")) g_wav_path = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--net-host")) { net.role = NetRole::Host; net.port = u16(std::atoi(argv[i + 1])); }
+        else if (!std::strcmp(argv[i], "--net-guest")) { net.role = NetRole::Guest; net.port = u16(std::atoi(argv[i + 1])); }
         else if (!std::strcmp(argv[i], "--force-mode")) g_force_mode = int(std::strtol(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--name")) settings.player_name = argv[i + 1];
         else if (!std::strcmp(argv[i], "--boot-type")) settings.boot_type = u16(std::strtoul(argv[i + 1], nullptr, 0));
@@ -270,7 +277,13 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "%s\n", problem.c_str());
         return 2;
     }
+    machine_set_abort_hook([](const char*, u32) {
+        print_progress();
+        print_hot_blocks();
+    });
     machine_boot(rom, settings);
+    net.name = settings.player_name;
+    net_start(net);
 
     Cpu& c = machine_cpu();
     u64 blocks = 0;
@@ -284,6 +297,8 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(sound_stats().notes), sound_stats().active_players,
                         sound_stats().active_channels, static_cast<unsigned long long>(sound_stats().unknown_commands));
             write_wav();
+            std::printf("net: %llu steps, %u players, last checksum %08x\n",
+                        static_cast<unsigned long long>(net_stats().steps), net_stats().players, net_stats().checksum);
             std::printf("pc=%08x cpsr=%08x lr=%08x sp=%08x stack:", c.pc, c.cpsr(), c.r[14], c.r[13]);
             for (u32 i = 0, shown = 0; i < 128 && shown < 12; ++i) {
                 const u32 value = rd32(c.r[13] + i * 4);

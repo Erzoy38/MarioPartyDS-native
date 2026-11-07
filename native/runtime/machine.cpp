@@ -2,6 +2,7 @@
 
 #include "hw.h"
 #include "memory.h"
+#include "net.h"
 #include "overlay.h"
 #include "sound.h"
 
@@ -134,6 +135,8 @@ void machine_step() {
     hw_step(c);
     if (g_hw.halted) return;  // time passes until an interrupt wakes the CPU
     if (overlay_watch_calls(c)) std::memset(g_block_cache, 0, sizeof g_block_cache);
+    if (c.pc == kGameTick) net_tick();
+    if (net_hook(c)) return;
     const u32 key = c.pc | c.thumb;
     BlockCacheEntry& cached = g_block_cache[(key >> 1) & (kBlockCacheSize - 1)];
     if (cached.key == key && cached.fn != nullptr) {
