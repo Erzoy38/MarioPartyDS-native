@@ -22,9 +22,11 @@
 #pragma once
 
 #include "cpu.h"
+#include "secure.h"
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,9 @@ struct NetSettings {
     // (LobbyStart). 0 means a direct connection to address:port.
     std::uintptr_t relay = 0;
     std::vector<u8> relay_inbox;
+    std::shared_ptr<secure::Channel> relay_channel;  // its encryption (LobbyStart::channel)
+    std::vector<u8> relay_outbox;                    // already encrypted, not sent yet
+    std::vector<u8> server_key;                      // a new connection to the server must show this key
     // The character chosen in the lobby (lobby::character_name), or -1. When the game asks this
     // player to select a character, net_auto_touch() taps it on the character screen.
     int character = -1;

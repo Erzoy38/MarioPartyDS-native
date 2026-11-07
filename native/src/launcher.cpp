@@ -1,3 +1,9 @@
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+
 #include "launcher.h"
 
 #include <algorithm>
@@ -23,6 +29,68 @@ constexpr Colour kButton{0x50, 0xC8, 0x40};
 constexpr Colour kButtonFocus{0xFF, 0xD0, 0x20};
 constexpr Colour kTitle{0xE8, 0x30, 0x20};
 constexpr Colour kPlayer[4] = {{0x20, 0x60, 0xE8}, {0xE0, 0x30, 0x20}, {0x30, 0xA8, 0x30}, {0xE8, 0xB8, 0x10}};
+
+// --- The server on this PC ---
+
+// True if something answers on this PC's port (a server started before, from here or by hand).
+bool server_answers(std::uint16_t port) {
+    WSADATA data;
+    WSAStartup(MAKEWORD(2, 2), &data);
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in where{};
+    where.sin_family = AF_INET;
+    where.sin_port = htons(port);
+    inet_pton(AF_INET, "127.0.0.1", &where.sin_addr);
+    const bool ok = connect(s, reinterpret_cast<sockaddr*>(&where), sizeof where) == 0;
+    closesocket(s);
+    return ok;
+}
+
+// MarioPartyDS-server.exe from this program's folder, in a window of its own that shows its key and
+// log; it keeps running when the game ends or goes back to the menu. Closing that window stops it.
+bool start_server_here(std::uint16_t port, std::string& error) {
+    const char* base = SDL_GetBasePath();
+    const std::wstring exe = std::filesystem::u8path(std::string(base ? base : "") + "MarioPartyDS-server.exe").wstring();
+    if (!std::filesystem::exists(exe)) {
+        error = "MarioPartyDS-server.exe fehlt neben dem Spiel.";
+        return false;
+    }
+    std::wstring command = L"\"" + exe + L"\" --port " + std::to_wstring(port);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof startup;
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, nullptr,
+                        &startup, &process)) {
+        error = "Der Server ließ sich nicht starten.";
+        return false;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return true;
+}
+
+// This PC's IPv4 addresses in the home network, for players there.
+std::string local_addresses() {
+    WSADATA data;
+    WSAStartup(MAKEWORD(2, 2), &data);
+    char name[256] = {};
+    gethostname(name, sizeof name);
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    addrinfo* found = nullptr;
+    std::string list;
+    if (getaddrinfo(name, nullptr, &hints, &found) == 0) {
+        for (addrinfo* a = found; a != nullptr; a = a->ai_next) {
+            char text[INET_ADDRSTRLEN] = {};
+            inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(a->ai_addr)->sin_addr, text, sizeof text);
+            if (std::string(text).rfind("127.", 0) == 0 || list.find(text) != std::string::npos) continue;
+            if (!list.empty()) list += ", ";
+            list += text;
+        }
+        freeaddrinfo(found);
+    }
+    return list;
+}
 
 void set(SDL_Renderer* r, Colour c, Uint8 a = 255) { SDL_SetRenderDrawColor(r, c.r, c.g, c.b, a); }
 
@@ -306,6 +374,9 @@ void save_settings(const std::filesystem::path& file, const AppSettings& s) {
 LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSettings& settings,
                           const std::filesystem::path& settings_file, const std::string& rejoin_room) {
     LobbyClient client;
+    // Server keys seen before, next to the settings: a server that suddenly has another key is refused.
+    const std::filesystem::path known_servers = settings_file.parent_path() / "known_servers.txt";
+    client.set_known_servers(known_servers.string());
     Screen screen = Screen::Main;
     int focus = 0;
     std::string message;
@@ -315,6 +386,16 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
     std::vector<SDL_Gamepad*> pads;
     bool text_input = false;
     AppSettings edited = settings;
+    bool own_server = false;  // the server runs on this PC: connect to it there
+    std::uint16_t own_port = lobby::kDefaultPort;
+    // Where the lobby is: the server of the settings, or this PC's own.
+    auto target = [&](std::string& address, std::uint16_t& port) {
+        split_server(settings.server, address, port);
+        if (own_server) {
+            address = "127.0.0.1";
+            port = own_port;
+        }
+    };
 
     auto go = [&](Screen next) {
         screen = next;
@@ -431,7 +512,8 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
             }
             case Screen::Online: {
                 top_screen(renderer, "Online spielen");
-                text(renderer, 24, 140, "Server: " + settings.server, kInk);
+                text(renderer, 24, 140, own_server ? "Server: dieser PC :" + std::to_string(own_port)
+                                                   : "Server: " + settings.server, kInk);
                 text(renderer, 24, 152, "Name:   " + settings.name, kInk);
                 const int change = menu.selector(24, 204, kWidth - 48, "Figur", lobby::character_name(settings.character));
                 if (change != 0) settings.character = (settings.character + change + lobby::kCharacters) % lobby::kCharacters;
@@ -440,11 +522,26 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
                     message = "Verbinde mit " + settings.server + " ...";
                     std::string address;
                     std::uint16_t port;
-                    split_server(settings.server, address, port);
+                    target(address, port);
                     if (phase != LobbyClient::Phase::Menu) client.connect(address, port, settings.name);
                     pending = Pending::Create;
                 }
                 if (menu.button(bx, 258, bw, "Raum beitreten", !busy)) { message.clear(); go(Screen::Join); }
+                if (!own_server && menu.button(bx, 310, bw, "Server hier starten", !busy)) {
+                    std::string address;
+                    split_server(settings.server, address, own_port);
+                    std::string error;
+                    const bool running = server_answers(own_port);
+                    if (running || start_server_here(own_port, error)) {
+                        own_server = true;
+                        client.disconnect();
+                        const std::string here = local_addresses();
+                        message = std::string(running ? "Server lief schon." : "Server gestartet (eigenes Fenster).")
+                                  + " Heimnetz: " + (here.empty() ? "?" : here) + ". Mehr in ONLINE.md.";
+                    } else {
+                        message = error;
+                    }
+                }
                 if (menu.button(bx, 284, bw, "Zurück zum Hauptmenü") || in.back) {
                     client.disconnect();
                     pending = Pending::None;
@@ -461,7 +558,7 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
                     message = "Verbinde mit " + settings.server + " ...";
                     std::string address;
                     std::uint16_t port;
-                    split_server(settings.server, address, port);
+                    target(address, port);
                     if (phase != LobbyClient::Phase::Menu) client.connect(address, port, settings.name);
                     pending = Pending::Join;
                 }
@@ -473,6 +570,11 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
                 centred(renderer, 12, "Einladungscode", kInk);
                 box(renderer, 56, 26, kWidth - 112, 30, kPanel, kInk);
                 centred(renderer, 33, client.code(), kTitle, 2);
+                if (!client.server_fingerprint().empty()) {
+                    // The first half of the server's fingerprint; the server prints it in full.
+                    centred(renderer, 183, "ID " + client.server_fingerprint().substr(0, 19)
+                                               + (client.server_is_new() ? " (neu)" : ""), kInk);
+                }
                 int present = 0, ready_count = 0;
                 for (int i = 0; i < lobby::kMaxPlayers; ++i) {
                     const LobbySeat& seat = client.seats()[size_t(i)];
@@ -532,6 +634,13 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
                     go(Screen::Main);
                 }
                 if (menu.button(bx, 322, bw, "Zurück") || in.back) go(Screen::Main);
+                if (menu.button(bx, 346, bw, "Schlüssel vergessen")) {
+                    // Only for a server that really got a new key (asked the host first).
+                    secure::KnownServers(known_servers.string()).forget(edited.server.find(':') == std::string::npos
+                                                                           ? edited.server + ":" + std::to_string(lobby::kDefaultPort)
+                                                                           : edited.server);
+                    message = "Schlüssel vergessen.";
+                }
                 break;
             }
         }
@@ -542,10 +651,32 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
             else SDL_StopTextInput(window);
         }
         if (!message.empty()) {
-            box(renderer, 8, kHeight - 30, kWidth - 16, 22, kPanel, kInk);
-            text(renderer, 14, kHeight - 23, message.substr(0, 29), kInk);
+            // Broken into lines between words; the box grows upwards.
+            std::vector<std::string> lines;
+            std::string line, word;
+            auto put = [&] {
+                if (word.empty()) return;
+                const std::string longer = line.empty() ? word : line + " " + word;
+                if (!line.empty() && text_width(longer) > kWidth - 28) {
+                    lines.push_back(line);
+                    line = word;
+                } else {
+                    line = longer;
+                }
+                word.clear();
+            };
+            for (char ch : message) {
+                if (ch == ' ') put();
+                else word += ch;
+            }
+            put();
+            if (!line.empty()) lines.push_back(line);
+            const float height = 10 + 12 * float(lines.size());
+            box(renderer, 8, kHeight - 8 - height, kWidth - 16, height, kPanel, kInk);
+            for (size_t i = 0; i < lines.size(); ++i) text(renderer, 14, kHeight - 3 - height + 4 + 12 * float(i), lines[i], kInk);
         }
         SDL_RenderPresent(renderer);
+        std::fflush(stdout);
         SDL_Delay(16);
     }
 }

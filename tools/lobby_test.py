@@ -123,10 +123,14 @@ def parse_room(body):
     return {"code": code, "slot": slot, "seats": seats}
 
 
-def start_server(port, *extra):
+def start_server(port, *extra, plain=True, key=None):
     os.makedirs(OUT, exist_ok=True)
-    log = open(os.path.join(OUT, f"server_{port}.txt"), "w")
-    server = subprocess.Popen([SERVER, "--port", str(port), "--bind", "127.0.0.1", *extra], stdout=log, stderr=subprocess.STDOUT)
+    log = open(os.path.join(OUT, f"server_{port}.txt"), "a")
+    # The protocol is tested in the clear (--allow-plain); the encryption is tested with the real
+    # client in the encryption tests below and in netsim_test.py.
+    key = key or os.path.join(OUT, f"server_{port}.key")
+    server = subprocess.Popen([SERVER, "--port", str(port), "--bind", "127.0.0.1", "--key", key, *extra]
+                              + (["--allow-plain"] if plain else []), stdout=log, stderr=subprocess.STDOUT)
     for _ in range(50):
         try:
             socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
@@ -525,6 +529,78 @@ def refused_through_real_client(port):
     assert "Diesen Code gibt es nicht" in result.stdout, result.stdout
 
 
+def real_join(port, known=None):
+    args = [EXE, ROM, "--lobby", f"127.0.0.1:{port}", "--name", "Real", "--character", "Luigi",
+            "--join", "ABCDEF", "--lobby-exit", "1"]
+    if known:
+        args += ["--known-servers", known]
+    return subprocess.run(args, capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
+
+
+def encryption_is_required(port):
+    """Without --allow-plain the server takes no unencrypted connection; the real client still works."""
+    server = start_server(port, plain=False)
+    try:
+        c = Client(port, "Plain")
+        c.send(CREATE, b"\x00")
+        got = c.receive()
+        assert got == ("closed", b""), got
+        result = real_join(port)
+        assert result.returncode == 3 and "Diesen Code gibt es nicht" in result.stdout, result.stdout
+        assert "lobby: server key " in result.stdout, result.stdout
+    finally:
+        server.kill()
+
+
+def changed_server_key_is_refused(port):
+    """The client keeps a server's key; the same address with another key is refused."""
+    known = os.path.join(OUT, f"known_{port}.txt")
+    keys = [os.path.join(OUT, f"key_a_{port}.key"), os.path.join(OUT, f"key_b_{port}.key")]
+    for path in [known] + keys:
+        if os.path.exists(path):
+            os.remove(path)
+    server = start_server(port, plain=False, key=keys[0])
+    try:
+        first = real_join(port, known)
+        assert "(new)" in first.stdout and "Diesen Code gibt es nicht" in first.stdout, first.stdout
+        second = real_join(port, known)
+        assert "(new)" not in second.stdout and "Diesen Code gibt es nicht" in second.stdout, second.stdout
+    finally:
+        server.kill()
+        server.wait()
+    server = start_server(port, plain=False, key=keys[1])
+    try:
+        third = real_join(port, known)
+        assert third.returncode == 3 and "anderen Schlüssel" in third.stdout, third.stdout
+        assert "Diesen Code" not in third.stdout, third.stdout  # refused before any lobby message
+    finally:
+        server.kill()
+
+
+def names_are_not_readable_on_the_wire(port):
+    """What passes between client and server through a capturing proxy does not show the name."""
+    server = start_server(port, plain=False)
+    capture = os.path.join(OUT, f"capture_{port}.bin")
+    if os.path.exists(capture):
+        os.remove(capture)
+    proxy = subprocess.Popen([sys.executable, os.path.join("tools", "netsim.py"), "--listen", str(port + 50),
+                              "--target", f"127.0.0.1:{port}", "--capture", capture,
+                              "--log", os.path.join(OUT, f"capture_{port}.txt")])
+    time.sleep(0.8)
+    try:
+        args = [EXE, ROM, "--lobby", f"127.0.0.1:{port + 50}", "--name", "Geheim42", "--character", "Luigi",
+                "--join", "ABCDEF", "--lobby-exit", "1"]
+        result = subprocess.run(args, capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
+        assert "Diesen Code gibt es nicht" in result.stdout, result.stdout
+        time.sleep(0.5)
+        data = open(capture, "rb").read()
+        assert len(data) > 300, len(data)
+        assert b"Geheim42" not in data and b"ABCDEF" not in data, "name or code readable"
+    finally:
+        proxy.kill()
+        server.kill()
+
+
 def run_rules(port):
     server = start_server(port)
     failures = 0
@@ -538,7 +614,9 @@ def run_rules(port):
                 print(f"FAIL  {function.__name__}: {error}")
     finally:
         server.kill()
-    for offset, function in ((1, expired_code), (2, server_restart_rebuilds_the_room), (3, silent_connection_is_dropped)):
+    for offset, function in ((1, expired_code), (2, server_restart_rebuilds_the_room), (3, silent_connection_is_dropped),
+                             (4, encryption_is_required), (5, changed_server_key_is_refused),
+                             (6, names_are_not_readable_on_the_wire)):
         try:
             function(port + offset)
             print(f"ok    {function.__name__}")

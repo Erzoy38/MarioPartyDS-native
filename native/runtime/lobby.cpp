@@ -49,6 +49,8 @@ void LobbyClient::disconnect() {
     socket_ = std::uintptr_t(INVALID_SOCKET);
     inbox_.clear();
     outbox_.clear();
+    channel_.reset();
+    key_checked_ = false;
     phase_ = Phase::Offline;
     code_.clear();
     own_slot_ = -1;
@@ -83,6 +85,11 @@ void LobbyClient::connect(const std::string& address, std::uint16_t port, const 
     socket_ = std::uintptr_t(s);
     phase_ = Phase::Connecting;
     connect_started_ = now_seconds();
+    // Every connection to the server is encrypted; the lobby's messages wait for the handshake.
+    channel_ = std::make_shared<secure::Channel>(secure::Channel::Role::Client);
+    outbox_ = channel_->start();
+    fingerprint_.clear();
+    server_is_new_ = false;
     Writer w;
     w.u16(kVersion);
     w.str(name);
@@ -90,7 +97,9 @@ void LobbyClient::connect(const std::string& address, std::uint16_t port, const 
 }
 
 void LobbyClient::send(std::uint8_t type, const std::vector<std::uint8_t>& body) {
-    frame(outbox_, type, body);
+    std::vector<std::uint8_t> plain;
+    frame(plain, type, body);
+    if (channel_) channel_->send(plain.data(), plain.size(), outbox_);
 }
 
 void LobbyClient::create(int character) {
@@ -231,7 +240,7 @@ void LobbyClient::poll() {
         phase_ = Phase::Menu;
         last_ping_ = 0;
     }
-    if (now - last_ping_ >= 1.0) {
+    if (now - last_ping_ >= 1.0 && channel_->ready()) {  // not before the handshake: it would count in
         last_ping_ = now;
         Writer w;
         w.u64(std::uint64_t(now * 1000.0));
@@ -254,7 +263,32 @@ void LobbyClient::poll() {
             if (WSAGetLastError() == WSAEWOULDBLOCK) break;
             return fail("Verbindung zum Server verloren.");
         }
-        inbox_.insert(inbox_.end(), buffer, buffer + n);
+        if (!channel_->receive(reinterpret_cast<const std::uint8_t*>(buffer), std::size_t(n), inbox_, outbox_)) {
+            return fail("Verschlüsselung gestört: " + channel_->error());
+        }
+    }
+    if (channel_->ready() && !key_checked_) {
+        key_checked_ = true;
+        fingerprint_ = secure::fingerprint(channel_->server_key());
+        const std::string server = address_ + ":" + std::to_string(port_);
+        if (!known_servers_.empty()) {
+            const int known = secure::KnownServers(known_servers_).check(server, channel_->server_key());
+            if (known < 0) {
+                return fail("Der Server " + server + " hat einen anderen Schlüssel als beim letzten Mal ("
+                            + fingerprint_ + "). Jemand könnte sich dazwischen schalten. Erst nach Rückfrage beim "
+                            "Host den alten Schlüssel in den Einstellungen vergessen.");
+            }
+            server_is_new_ = known == 0;
+        }
+        std::printf("lobby: server key %s%s\n", fingerprint_.c_str(), server_is_new_ ? " (new)" : "");
+    }
+    while (!outbox_.empty()) {
+        const int n = ::send(s, reinterpret_cast<const char*>(outbox_.data()), int(outbox_.size()), 0);
+        if (n <= 0) {
+            if (WSAGetLastError() == WSAEWOULDBLOCK) break;
+            return fail("Verbindung zum Server verloren.");
+        }
+        outbox_.erase(outbox_.begin(), outbox_.begin() + n);
     }
     for (;;) {
         std::uint8_t type;
@@ -272,11 +306,15 @@ void LobbyClient::poll() {
 LobbyStart LobbyClient::take_start() {
     LobbyStart start = start_;
     SOCKET s = as_socket(socket_);
-    // Anything still queued for the server is lobby talk and no longer wanted.
+    // What is still queued is encrypted already and counted; the game sends it first.
+    start.outbox = std::move(outbox_);
     outbox_.clear();
     u_long blocking = 0;
     ioctlsocket(s, FIONBIO, &blocking);
     start.socket = std::uintptr_t(s);
+    start.channel = channel_;
+    if (channel_) start.server_key = channel_->server_key();
+    channel_.reset();
     start.inbox = std::move(inbox_);
     inbox_.clear();
     socket_ = std::uintptr_t(INVALID_SOCKET);

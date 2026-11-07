@@ -200,7 +200,7 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 | 9 | Minispiele einzeln online, Matrix mit 73 Zeilen. **Erreicht mit Einschränkungen** (siehe unten) | Jedes Spiel gestartet, gespielt, Ergebnis gleich bei allen; Grenzen dokumentiert |
 | 10 | Lobby, Codes, Charakterwahl, Oberfläche. **Erreicht mit Einschränkungen** (siehe unten) | Ablauf von Raum bis Start in 4 Prozessen |
 | 11 | Abbrüche, Wiedereintritt, Serverneustart, Verzögerung, Ping. **Erreicht mit Einschränkungen** (siehe unten) | Netzsimulator-Tests bestanden |
-| 12 | Internet: Server betreiben, Verschlüsselung, Einstellungen, Vollbild | 4 echte PCs an verschiedenen Standorten spielen eine Party |
+| 12 | Internet: Server betreiben, Verschlüsselung, Einstellungen, Vollbild. **Teilweise:** Verschlüsselung und Server-Start fertig, echter Test offen (siehe unten) | 4 echte PCs an verschiedenen Standorten spielen eine Party |
 
 ### Ergebnis Phase 2 [gemessen, gegen melonDS an `main`]
 
@@ -531,6 +531,38 @@ Nach den Korrekturen liefen die Spiele beim nächsten Lauf durch.
 - Das Protokoll des Fensters wird jetzt jedes Bild geschrieben; vorher fehlte bei einem harten Ende der letzte Teil.
 - Wer den Code kennt, kann nach einem Serverneustart einen Raum mit diesem Code anlegen, bevor der echte Host zurück ist. Der echte Host wird dann abgewiesen.
 
+### Phase 12, erster Teil [gemessen auf einem PC; das Ziel mit 4 PCs an verschiedenen Orten steht aus]
+
+**Aufbau:**
+
+| Teil | Datei | Aufgabe |
+|---|---|---|
+| Verschlüsselung | `native/runtime/secure.cpp` | Kryptografie von Windows (CNG, `bcrypt.dll`), keine zusätzliche Bibliothek. Je Verbindung ein Schlüsselaustausch ECDH P-256; der Server unterschreibt ihn mit seinem festen Schlüssel ECDSA P-256. Daraus entstehen zwei Schlüssel AES-256-GCM, einer je Richtung (HMAC-SHA256 über das gemeinsame Geheimnis und beide Hallo-Nachrichten). Jeder Datensatz trägt Länge, Chiffretext und Prüfwert; die Nonce ist ein Zähler je Richtung |
+| Serverschlüssel | `server.cpp` | `MarioPartyDS-server.key` neben dem Server, beim ersten Start erzeugt (`--key`). Der Server gibt seinen Fingerabdruck aus (SHA-256, 8 Gruppen) |
+| Schlüssel merken | `secure.cpp`, `lobby.cpp`, `launcher.cpp` | Das Spiel merkt sich den Schlüssel je Adresse und Port in `known_servers.txt`, wie SSH beim ersten Kontakt. Ein anderer Schlüssel für dieselbe Adresse wird abgewiesen, bevor eine Lobby-Nachricht hinausgeht. Der Raum zeigt die erste Hälfte des Fingerabdrucks („ID …“). „Einstellungen“ → „Schlüssel vergessen“ löscht den gemerkten Schlüssel |
+| Im Spiel | `net.cpp` | Die Spielverbindung übernimmt die Verschlüsselung der Lobby. Jede neue Verbindung muss denselben Serverschlüssel zeigen wie beim Start der Partie, auch nach einem Programmneustart (steht in `rejoin.txt`) |
+| Klartext nur für Tests | `server.cpp` | Ohne `--allow-plain` trennt der Server jede Verbindung, die nicht mit dem Handschlag beginnt |
+| Server betreiben | `launcher.cpp` | „Online spielen“ → „Server hier starten“ startet `MarioPartyDS-server.exe` in einem eigenen Fenster, oder nimmt den, der auf dem Port schon läuft. Der Host verbindet sich dann über `127.0.0.1`; das Menü zeigt die Adressen im Heimnetz |
+| Anleitung | `ONLINE.md` | Server, Firewall, Portweiterleitung TCP 47000, Adresse, Fingerabdruck prüfen, Verhalten bei Abbrüchen |
+
+**Belegt:**
+
+| Prüfung | Ergebnis |
+|---|---|
+| Protokoll und Sicherheit (`tools/lobby_test.py --rules`) | 28 von 28. Neu: Ohne `--allow-plain` wird eine Klartext-Verbindung getrennt, und der echte Client kommt verschlüsselt durch. Der Schlüssel wird beim ersten Mal gemerkt („new“) und beim zweiten Mal erkannt; ein Server mit anderem Schlüssel unter derselben Adresse wird mit Code 3 und „anderen Schlüssel“ abgewiesen, ohne dass eine Lobby-Nachricht hinausgeht. Ein Mitschnitt aller Bytes über `netsim.py --capture` enthält weder den Namen noch den Code |
+| Spiel verschlüsselt durch den Simulator (`tools/netsim_test.py`) | 13 von 13 Fällen, alle verschlüsselt: die 12 aus Phase 11 und `guest_corrupt`; Verzögerung 7 bei 10 ms je Richtung, wie ohne Verschlüsselung |
+| Veränderte Daten (`guest_corrupt`) | Ein Byte auf dem Weg zu P2 geändert: P2 meldet „an encrypted record was changed on the way“, verbindet sich neu, Host sendet 7 Nachrichten erneut, Minispiel bei allen gleich |
+| Fenster mit echten Eingaben | „Server hier starten“ erkennt einen laufenden Server („Server lief schon“) und zeigt die Adressen im Heimnetz. „Raum erstellen“ läuft verschlüsselt; der Raum zeigt „ID 0A06 40EB C0A3 1F77 (neu)“, den Anfang des Fingerabdrucks, den der Server ausgibt. Der Schlüssel steht danach in `known_servers.txt` |
+
+**Unterwegs gefunden:** Die Lobby schickte ihren ersten Ping vor dem Ende des Handschlags. Er maß den Schlüsselaufbau mit, und die Verzögerung fiel zu hoch aus (12 statt 7 bei 10 ms je Richtung). Jetzt wird erst nach dem Handschlag gepingt.
+
+**Abweichungen von der Architektur:** TLS über WebSocket wurde durch einen eigenen Handschlag ersetzt. Grund: Windows bringt die Bausteine mit, und so ist keine Bibliothek und kein Zertifikat nötig. Vertrauen beim ersten Kontakt statt Zertifizierungsstelle. Ende-zu-Ende ist es nicht: Der Server, also der PC des Hosts, sieht die Spieldaten.
+
+**Offen für das Ziel der Phase:**
+- **Echter Test:** 4 PCs an verschiedenen Orten. Dafür braucht es den Nutzer und drei Mitspieler, außerdem die Firewall-Freigabe und die Portweiterleitung am Router des Hosts.
+- **Weitergabe (Entscheidung 3):** Wie bekommen die anderen das Programm? `MarioPartyDS.exe` enthält den übersetzten Spielcode.
+- Nicht selbst geprüft: Start eines neuen Serverfensters über den Knopf. Der Server würde dann auf allen Adressen lauschen, und Windows fragt nach der Firewall; im Test lief der Server deshalb schon und wurde nur gefunden. Vollbild (F11, Einstellung) ist unverändert seit Phase 10.
+
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 
 **Früher Teilnutzen:** Nach Phase 8 ist ein Vier-Spieler-Betrieb im Heimnetz testbar, aber nur nach Bestehen der Tests.
@@ -562,6 +594,6 @@ Nach den Korrekturen liefen die Spiele beim nächsten Lauf durch.
 ## 11. Offene Entscheidungen
 
 1. Architektur B mit N1: **entschieden** (Phase 1).
-2. Server: **entschieden am 05.11.2026: auf dem PC des Nutzers.** Folgen: Der Server läuft nur, solange dieser PC an ist. Die anderen erreichen ihn über die öffentliche Adresse des Anschlusses; dafür braucht es eine Portweiterleitung im Router (UDP), oder UPnP, falls der Router es erlaubt. Bei wechselnder öffentlicher Adresse braucht es einen dynamischen DNS-Namen oder einen neuen Einladungscode. Der Lobby-Dienst kann im selben Programm laufen.
+2. Server: **entschieden am 05.11.2026: auf dem PC des Nutzers.** Folgen: Der Server läuft nur, solange dieser PC an ist. Die anderen erreichen ihn über die öffentliche Adresse des Anschlusses; dafür braucht es eine Portweiterleitung im Router (TCP 47000; das Spiel nutzt TCP, siehe Phase 8), oder UPnP, falls der Router es erlaubt. Bei wechselnder öffentlicher Adresse braucht es einen dynamischen DNS-Namen oder einen neuen Einladungscode. Der Lobby-Dienst kann im selben Programm laufen.
 3. Weitergabe: Wie kommen die anderen drei Spieler an die Exe, und hat jeder eine eigene ROM? **Offen.**
 4. Git-Repository: **angelegt**, nur lokal.

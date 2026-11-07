@@ -13,10 +13,10 @@ if(NOT GENERATED)
 endif()
 
 add_library(runtime STATIC runtime/cpu.cpp runtime/memory.cpp runtime/hw.cpp runtime/bios.cpp
-            runtime/overlay.cpp runtime/ppu.cpp runtime/gpu3d.cpp runtime/sound.cpp runtime/net.cpp runtime/lobby.cpp runtime/machine.cpp)
+            runtime/overlay.cpp runtime/ppu.cpp runtime/gpu3d.cpp runtime/sound.cpp runtime/net.cpp runtime/lobby.cpp runtime/secure.cpp runtime/machine.cpp)
 target_include_directories(runtime PUBLIC runtime)
 target_compile_options(runtime PRIVATE /W4 /WX /utf-8)
-target_link_libraries(runtime PUBLIC ws2_32)
+target_link_libraries(runtime PUBLIC ws2_32 bcrypt)
 
 add_library(game_code STATIC ${GENERATED})
 target_link_libraries(game_code PUBLIC runtime)
@@ -29,9 +29,9 @@ target_link_libraries(MarioPartyDS-headless PRIVATE runtime game_code runtime)
 target_compile_options(MarioPartyDS-headless PRIVATE /W4 /WX /utf-8)
 
 # The lobby server holds no game code and no game content.
-add_executable(MarioPartyDS-server server/server.cpp)
+add_executable(MarioPartyDS-server server/server.cpp runtime/secure.cpp)
 target_include_directories(MarioPartyDS-server PRIVATE runtime)
-target_link_libraries(MarioPartyDS-server PRIVATE ws2_32)
+target_link_libraries(MarioPartyDS-server PRIVATE ws2_32 bcrypt)
 target_compile_options(MarioPartyDS-server PRIVATE /W4 /WX /utf-8)
 
 set(SDL3_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL3/cmake")

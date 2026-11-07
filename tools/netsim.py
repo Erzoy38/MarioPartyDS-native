@@ -2,6 +2,7 @@
 
 Usage: python tools/netsim.py --listen PORT --target HOST:PORT [--delay MS] [--jitter MS]
                               [--loss P] [--loss-wait MS] [--control FILE] [--log FILE] [--seed N]
+                              [--capture FILE]
 
 Every byte that comes in on one side goes out on the other after --delay ms, plus a random part
 of up to --jitter ms. With probability --loss a piece waits --loss-wait ms more (default 200), which
@@ -12,6 +13,7 @@ of the bytes in each direction stays as it was, as on a real connection.
   cut [SECONDS]     closes all connections now and refuses new ones for SECONDS (default 0)
   silent SECONDS    passes nothing on for SECONDS but keeps the connections open (a dead line)
   delay MS [JITTER] changes the delay from now on
+  corrupt           changes one byte in the next piece towards the player (tests the encryption)
 Each command is reported in the log with the time.
 """
 import argparse
@@ -35,6 +37,8 @@ class Proxy:
         self.refuse_until = 0.0
         self.silent_until = 0.0
         self.connections = set()
+        self.corrupt_next = False
+        self.capture = open(args.capture, "ab") if args.capture else None  # every byte, both ways
         self.log_file = open(args.log, "a", encoding="utf-8") if args.log else sys.stdout
         self.started = time.monotonic()
         self.count = 0
@@ -73,6 +77,13 @@ class Proxy:
                 data = await reader.read(65536)
                 if not data:
                     break
+                if self.capture is not None:
+                    self.capture.write(data)
+                    self.capture.flush()
+                if name == "down" and self.corrupt_next and len(data) > 8:
+                    self.corrupt_next = False
+                    data = data[:len(data) // 2] + bytes([data[len(data) // 2] ^ 0x40]) + data[len(data) // 2 + 1:]
+                    self.log(f"changed one byte in a piece of {len(data)}")
                 due = max(time.monotonic() + self.late(), last_due)
                 last_due = due
                 queue.put_nowait((due, data))
@@ -137,6 +148,9 @@ class Proxy:
                 elif parts[0] == "silent":
                     self.silent_until = time.monotonic() + float(parts[1])
                     self.log(f"silent for {parts[1]} s")
+                elif parts[0] == "corrupt":
+                    self.corrupt_next = True
+                    self.log("will change one byte")
                 elif parts[0] == "delay":
                     self.delay = float(parts[1]) / 1000
                     if len(parts) > 2:
@@ -155,6 +169,7 @@ async def main():
     parser.add_argument("--loss", type=float, default=0, help="share of pieces that come late as if lost")
     parser.add_argument("--loss-wait", type=float, default=200, help="ms a lost piece costs")
     parser.add_argument("--control")
+    parser.add_argument("--capture", help="file that gets every byte passed on, both ways (what a listener sees)")
     parser.add_argument("--log")
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()

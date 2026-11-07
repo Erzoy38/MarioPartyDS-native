@@ -3,9 +3,11 @@
 #pragma once
 
 #include "lobby_protocol.h"
+#include "secure.h"
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -29,6 +31,9 @@ struct LobbyStart {
     std::string code;                 // the room
     std::string address;              // the server, for coming back
     std::uint16_t port = 0;
+    std::shared_ptr<secure::Channel> channel;  // the encryption of `socket`, carried on by the game
+    std::vector<std::uint8_t> server_key;      // the server's identity key; a new connection must show the same
+    std::vector<std::uint8_t> outbox;          // bytes for the server not sent yet (already encrypted)
 };
 
 class LobbyClient {
@@ -49,6 +54,13 @@ public:
 
     // Reads what has arrived and sends a ping each second.
     void poll();
+
+    // Where server keys seen before are kept (secure::KnownServers); empty: not kept, every key is
+    // taken. Set before connect().
+    void set_known_servers(const std::string& path) { known_servers_ = path; }
+    // After the handshake: the server's fingerprint, and whether this server was new to this player.
+    const std::string& server_fingerprint() const { return fingerprint_; }
+    bool server_is_new() const { return server_is_new_; }
 
     Phase phase() const { return phase_; }
     // The last refusal or failure, as text for the player; cleared by the next request.
@@ -73,6 +85,11 @@ private:
     std::string name_;
     std::string address_;
     std::uint16_t port_ = 0;
+    std::shared_ptr<secure::Channel> channel_;
+    bool key_checked_ = false;
+    std::string known_servers_;
+    std::string fingerprint_;
+    bool server_is_new_ = false;
     std::vector<std::uint8_t> inbox_;
     std::vector<std::uint8_t> outbox_;
     std::string message_;

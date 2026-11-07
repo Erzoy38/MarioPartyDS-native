@@ -39,6 +39,7 @@ CASES = {
     "host_cut": dict(net=(10, 2, 0), events=[(5, "cut", 0, 4)]),
     "server_restart": dict(net=(10, 2, 0), events=[(5, "restart", None, 3)]),
     "guest_restart": dict(net=(10, 2, 0), events=[(5, "restart_guest", 2, 2)]),
+    "guest_corrupt": dict(net=(10, 2, 0), events=[(5, "corrupt", 1, 0)]),
     "guest_gone": dict(net=(10, 2, 0), events=[(5, "kill", 3, 0)], expect_end="P4 (Guest3) ist nicht zurückgekommen"),
     "guest_leaves": dict(net=(10, 2, 0), leave=3, expect_end="P4 (Guest3) hat das Spiel verlassen"),
     "host_leaves": dict(net=(10, 2, 0), leave=0, expect_end="Der Host hat das Spiel beendet"),
@@ -61,7 +62,9 @@ class Run:
 
     def start_server(self):
         log = open(os.path.join(self.folder, "server.txt"), "a")
-        self.server = subprocess.Popen([lt.SERVER, "--port", str(self.port), "--bind", "127.0.0.1"],
+        # The same key across a restart, as a real server keeps its key file.
+        self.server = subprocess.Popen([lt.SERVER, "--port", str(self.port), "--bind", "127.0.0.1",
+                                        "--key", os.path.join(OUT, "server.key")],
                                        stdout=log, stderr=subprocess.STDOUT)
         time.sleep(0.3)
 
@@ -157,7 +160,7 @@ class Run:
         with open(os.path.join(self.folder, "events.txt"), "a") as f:
             f.write(stamp + "\n")
         print("  " + stamp)
-        if action in ("cut", "silent"):
+        if action in ("cut", "silent", "corrupt"):
             with open(os.path.join(self.folder, f"control{who}.txt"), "w") as f:
                 f.write(f"{action} {seconds}\n")
         elif action == "restart":

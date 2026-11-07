@@ -1,7 +1,12 @@
 // MarioPartyDS-server: lobby with room codes, and the relay for the game once a room has started.
 //
 // Usage: MarioPartyDS-server [--port N] [--bind ADDRESS] [--code-lifetime SECONDS] [--seed N]
-//                             [--input-delay PICTURES] [--idle-timeout SECONDS]
+//                             [--input-delay PICTURES] [--idle-timeout SECONDS] [--key FILE] [--allow-plain]
+//
+// Every connection is encrypted (runtime/secure.h). The server's key lives in --key (default
+// MarioPartyDS-server.key next to the program) and is made on the first start; its fingerprint is
+// printed, so the host can tell the others. --allow-plain also takes unencrypted connections, for
+// the protocol tests only.
 //
 // --bind 127.0.0.1 accepts players from this PC only (tests; no firewall question). The default
 // 0.0.0.0 accepts players from other PCs, which Windows asks about once.
@@ -18,6 +23,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "lobby_protocol.h"
+#include "secure.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -30,6 +36,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <random>
 #include <set>
 #include <string>
@@ -62,6 +69,9 @@ struct Client {
     bool relay = false;  // the room has started: frames are game data
     bool closing = false;
     double heard = 0;  // last bytes from this client
+    bool decided = false;                     // encrypted or not, from the first four bytes
+    std::vector<u8> first;                    // those bytes, until then
+    std::shared_ptr<secure::Channel> channel;  // null: a plain connection (--allow-plain)
 };
 
 struct Room {
@@ -84,10 +94,54 @@ double g_empty_room_lifetime = 10 * 60;
 int g_input_delay = -1;  // pictures; -1: from the players' pings at the start
 std::mt19937 g_random;
 std::mt19937_64 g_token_random{std::random_device{}()};  // never from --seed
+secure::Identity g_identity;
+bool g_allow_plain = false;
 
 void send_frame(Client& client, u8 type, const std::vector<u8>& body) {
     if (client.closing) return;
-    frame(client.outbox, type, body);
+    if (!client.channel) {
+        frame(client.outbox, type, body);
+        return;
+    }
+    std::vector<u8> plain;
+    frame(plain, type, body);
+    client.channel->send(plain.data(), plain.size(), client.outbox);
+}
+
+// Raw bytes from a client: the first four decide whether the connection is encrypted. False if the
+// connection must end.
+bool take_bytes(int id, Client& client, const u8* data, size_t size) {
+    if (!client.decided) {
+        client.first.insert(client.first.end(), data, data + size);
+        if (client.first.size() < 4) return true;
+        client.decided = true;
+        std::vector<u8> first = std::move(client.first);
+        if (std::memcmp(first.data(), "MPDS", 4) == 0) {
+            client.channel = std::make_shared<secure::Channel>(secure::Channel::Role::Server, &g_identity);
+        } else if (!g_allow_plain) {
+            std::printf("client %d: not encrypted, refused\n", id);
+            return false;
+        } else {
+            client.inbox.insert(client.inbox.end(), first.begin(), first.end());
+            return true;
+        }
+        data = first.data();
+        size = first.size();
+        if (!client.channel->receive(data, size, client.inbox, client.outbox)) {
+            std::printf("client %d: %s\n", id, client.channel->error().c_str());
+            return false;
+        }
+        return true;
+    }
+    if (!client.channel) {
+        client.inbox.insert(client.inbox.end(), data, data + size);
+        return true;
+    }
+    if (!client.channel->receive(data, size, client.inbox, client.outbox)) {
+        std::printf("client %d: %s\n", id, client.channel->error().c_str());
+        return false;
+    }
+    return true;
 }
 
 void send_error(Client& client, Error error) {
@@ -482,15 +536,36 @@ int main(int argc, char** argv) {
     u16 port = kDefaultPort;
     u32 seed = std::random_device{}();
     const char* bind_address = "0.0.0.0";
-    for (int i = 1; i + 1 < argc; i += 2) {
+    std::string key_file;
+    for (int i = 1; i < argc; i += 2) {
+        if (!std::strcmp(argv[i], "--allow-plain")) {  // the only option without a value
+            g_allow_plain = true;
+            --i;
+            continue;
+        }
+        if (i + 1 >= argc) break;
         if (!std::strcmp(argv[i], "--port")) port = u16(std::atoi(argv[i + 1]));
         else if (!std::strcmp(argv[i], "--bind")) bind_address = argv[i + 1];
         else if (!std::strcmp(argv[i], "--code-lifetime")) g_code_lifetime = std::atof(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--seed")) seed = u32(std::strtoul(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--input-delay")) g_input_delay = std::atoi(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--idle-timeout")) g_idle_timeout = std::atof(argv[i + 1]);
+        else if (!std::strcmp(argv[i], "--key")) key_file = argv[i + 1];
     }
     g_random.seed(seed);
+    if (key_file.empty()) {
+        char path[MAX_PATH] = {};
+        GetModuleFileNameA(nullptr, path, MAX_PATH);
+        key_file = std::string(path);
+        key_file = key_file.substr(0, key_file.find_last_of("\\/") + 1) + "MarioPartyDS-server.key";
+    }
+    std::string key_error;
+    if (!g_identity.load_or_create(key_file, key_error)) {
+        std::printf("server key: %s\n", key_error.c_str());
+        return 1;
+    }
+    std::printf("server key %s, fingerprint %s%s\n", key_file.c_str(), secure::fingerprint(g_identity.public_key()).c_str(),
+                g_allow_plain ? ", also unencrypted connections (tests)" : "");
     WSADATA data;
     WSAStartup(MAKEWORD(2, 2), &data);
     SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -544,8 +619,8 @@ int main(int argc, char** argv) {
                     gone.push_back(id);
                     continue;
                 }
-                client.inbox.insert(client.inbox.end(), buffer, buffer + n);
                 client.heard = now_seconds();
+                if (!take_bytes(id, client, reinterpret_cast<const u8*>(buffer), size_t(n))) gone.push_back(id);
             }
         }
         for (int id : gone) drop(id);

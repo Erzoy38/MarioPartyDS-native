@@ -95,8 +95,10 @@ u64 now_ms() {
 // --- Connections: non-blocking sockets with their own buffers ---
 struct Conn {
     SOCKET s = INVALID_SOCKET;
-    std::vector<u8> in, out;
+    std::vector<u8> in, out;  // `in` decrypted, `out` as it goes on the wire
     u64 heard = 0;
+    std::shared_ptr<secure::Channel> channel;  // to the server: encrypted (secure.h)
+    bool key_checked = false;
     bool open() const { return s != INVALID_SOCKET; }
 };
 
@@ -112,6 +114,8 @@ void conn_close(Conn& c) {
     c.s = INVALID_SOCKET;
     c.in.clear();
     c.out.clear();
+    c.channel.reset();
+    c.key_checked = false;
 }
 
 bool conn_flush(Conn& c) {
@@ -128,7 +132,13 @@ bool conn_flush(Conn& c) {
 
 bool conn_send(Conn& c, u8 type, const std::vector<u8>& body) {
     if (!c.open()) return false;
-    lobby::frame(c.out, type, body);
+    if (c.channel) {
+        std::vector<u8> plain;
+        lobby::frame(plain, type, body);
+        c.channel->send(plain.data(), plain.size(), c.out);
+    } else {
+        lobby::frame(c.out, type, body);
+    }
     return conn_flush(c);
 }
 
@@ -138,8 +148,13 @@ bool conn_read(Conn& c) {
         char buffer[16384];
         const int n = recv(c.s, buffer, sizeof buffer, 0);
         if (n > 0) {
-            c.in.insert(c.in.end(), buffer, buffer + n);
             c.heard = now_ms();
+            if (!c.channel) {
+                c.in.insert(c.in.end(), buffer, buffer + n);
+            } else if (!c.channel->receive(reinterpret_cast<const u8*>(buffer), size_t(n), c.in, c.out)) {
+                std::printf("net: encryption: %s\n", c.channel->error().c_str());
+                return false;
+            }
             continue;
         }
         if (n == 0) return false;
@@ -234,11 +249,17 @@ void write_rejoin_file() {
     const std::string temporary = g_settings.rejoin_file + ".new";
     FILE* f = nullptr;
     if (fopen_s(&f, temporary.c_str(), "w") != 0 || f == nullptr) return;
+    std::string key;
+    for (u8 b : g_settings.server_key) {
+        char two[3];
+        std::snprintf(two, sizeof two, "%02x", b);
+        key += two;
+    }
     std::fprintf(f, "via_server=%d\naddress=%s\nport=%u\ncode=%s\nslot=%u\ntoken=%llu\nplayers=%d\n"
-                    "input_delay=%d\ngive_up=%d\ncharacter=%d\nname=%s\n",
+                    "input_delay=%d\ngive_up=%d\ncharacter=%d\nname=%s\nserver_key=%s\n",
                  g_relay_mode ? 1 : 0, g_settings.address.c_str(), g_settings.port, g_settings.code.c_str(),
                  g_own_aid, static_cast<unsigned long long>(g_token), g_settings.players, g_settings.input_delay,
-                 g_settings.give_up_seconds, g_settings.character, g_settings.name.c_str());
+                 g_settings.give_up_seconds, g_settings.character, g_settings.name.c_str(), key.c_str());
     std::fclose(f);
     std::remove(g_settings.rejoin_file.c_str());
     std::rename(temporary.c_str(), g_settings.rejoin_file.c_str());
@@ -541,6 +562,10 @@ void check_connect() {
     g_main.s = g_connecting;
     g_main.heard = now_ms();
     g_connecting = INVALID_SOCKET;
+    if (g_relay_mode) {  // the server: encrypted, the hello and kResume wait for the handshake
+        g_main.channel = std::make_shared<secure::Channel>(secure::Channel::Role::Client);
+        g_main.out = g_main.channel->start();
+    }
     if (!g_ever_connected) {  // the first connection of a direct guest
         g_ever_connected = true;
         g_main_attached = true;
@@ -625,6 +650,14 @@ void service_main() {
     }
     // What came before a close is still read: often the last words, such as the end of the game.
     const bool alive = conn_read(g_main) && conn_flush(g_main);
+    if (g_main.channel && g_main.channel->ready() && !g_main.key_checked) {
+        g_main.key_checked = true;
+        if (!g_settings.server_key.empty() && g_main.channel->server_key() != g_settings.server_key) {
+            conn_close(g_main);
+            finish_game("Der Server hat jetzt einen anderen Schlüssel als beim Start der Partie. "
+                        "Jemand könnte sich dazwischen schalten; die Partie ist beendet.");
+        }
+    }
     u8 type;
     std::vector<u8> body;
     while (g_main.open() && conn_next(g_main, type, body)) {
@@ -1299,6 +1332,9 @@ void net_start(const NetSettings& settings) {
         g_main.s = static_cast<SOCKET>(settings.relay);
         make_nonblocking(g_main.s);
         g_main.in = settings.relay_inbox;
+        g_main.channel = settings.relay_channel;
+        g_main.out = settings.relay_outbox;
+        g_main.key_checked = true;
         g_main.heard = now_ms();
         g_main_attached = true;
         g_ever_connected = true;
@@ -1549,7 +1585,13 @@ bool net_load_rejoin(const std::string& path, NetSettings& settings) {
         else if (key == "give_up") settings.give_up_seconds = std::atoi(value.c_str());
         else if (key == "character") settings.character = std::atoi(value.c_str());
         else if (key == "name") settings.name = value;
-        else --found;
+        else if (key == "server_key") {
+            settings.server_key.clear();
+            for (size_t i = 0; i + 1 < value.size(); i += 2) {
+                settings.server_key.push_back(u8(std::strtoul(value.substr(i, 2).c_str(), nullptr, 16)));
+            }
+            --found;  // older files have none
+        } else --found;
     }
     std::fclose(f);
     if (found < 11 || settings.token == 0 || settings.slot < 1 || settings.slot > 3) return false;

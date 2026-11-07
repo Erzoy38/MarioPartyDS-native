@@ -270,6 +270,7 @@ struct LobbyOptions {
     int character = 0;
     int start_players = 4;
     bool exit_after_start = false;
+    std::string known_servers;  // --known-servers FILE: server keys seen before; empty: none kept
 };
 
 int character_by_name(const char* name) {
@@ -304,6 +305,7 @@ int run_lobby(const LobbyOptions& options, const std::string& name, NetSettings&
         std::getline(file, code);
     }
     LobbyClient client;
+    client.set_known_servers(options.known_servers);
     client.connect(address, port, name);
     bool asked = false, ready_sent = false, start_sent = false, code_written = false;
     std::uint64_t seen_updates = 0;
@@ -369,6 +371,9 @@ int run_lobby(const LobbyOptions& options, const std::string& name, NetSettings&
     net.role = start.slot == 0 ? NetRole::Host : NetRole::Guest;
     net.relay = start.socket;
     net.relay_inbox = std::move(start.inbox);
+    net.relay_channel = start.channel;
+    net.relay_outbox = std::move(start.outbox);
+    net.server_key = start.server_key;
     net.character = start.characters[size_t(start.slot)];
     net.address = start.address;
     net.port = start.port;
@@ -499,6 +504,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--character")) lobby_options.character = character_by_name(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--start-players")) lobby_options.start_players = std::atoi(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--lobby-exit")) lobby_options.exit_after_start = std::atoi(argv[i + 1]) != 0;
+        else if (!std::strcmp(argv[i], "--known-servers")) lobby_options.known_servers = argv[i + 1];
     }
     for (int i = 2; i + 1 < argc; i += 2) {
         if (!std::strcmp(argv[i], "--stop")) stop = u32(std::strtoul(argv[i + 1], nullptr, 0));

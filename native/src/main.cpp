@@ -380,6 +380,9 @@ int main(int argc, char** argv) {
             net.role = start.slot == 0 ? NetRole::Host : NetRole::Guest;
             net.relay = start.socket;
             net.relay_inbox = start.inbox;
+            net.relay_channel = start.channel;
+            net.relay_outbox = start.outbox;
+            net.server_key = start.server_key;
             net.character = start.characters[size_t(start.slot)];
             net.name = app.name;
             net.address = start.address;
