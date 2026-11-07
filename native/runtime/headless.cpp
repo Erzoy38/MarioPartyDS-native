@@ -4,10 +4,18 @@
 // Usage: MarioPartyDS-headless <rom.nds> --stop 0x02003000 --dump <folder> [--max-blocks N]
 //        [--dump-tick N]... [--dump-step N]... [--watch ADDR]... [--name NAME] [--save FILE (read only)]
 //        [--input TICK:WHAT[:FRAMES]]...
+//
+// Through the lobby server instead of --net-host/--net-guest:
+//        --lobby ADDRESS[:PORT] --character NAME (--create CODEFILE | --join CODE|@CODEFILE)
+//        [--start-players N] [--lobby-exit 1]
+// --create makes a room and writes its code to CODEFILE ("-": nowhere); the host starts once N
+// players (default 4) are in and ready. --join @FILE waits for FILE and joins with its code; guests
+// are ready at once. --lobby-exit 1 ends right after the start, for lobby tests.
 #define _CRT_SECURE_NO_WARNINGS  // sscanf reads the command line here, with field widths
 #include "cpu.h"
 #include "gpu3d.h"
 #include "hw.h"
+#include "lobby.h"
 #include "machine.h"
 #include "memory.h"
 #include "net.h"
@@ -24,6 +32,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -171,6 +180,7 @@ void print_progress() {
 
 // --watch ADDR, repeatable: counts how often a block start is reached. For finding a stuck spot.
 std::map<u32, u64> g_watched;
+std::set<u32> g_traced;  // --trace ADDR: every call is logged with r0, r1 and the return address
 
 void print_watched() {
     for (const auto& [address, count] : g_watched) {
@@ -230,9 +240,127 @@ void apply_script(u64 tick) {
             y = input.y;
         }
     }
+    u32 auto_x = 0, auto_y = 0;
+    if (net_auto_touch(auto_x, auto_y)) {
+        touching = true;
+        x = auto_x;
+        y = auto_y;
+    }
     hw_set_keys(keys & 0xFFF);
     hw_set_mic(keys & kMicBit);
     hw_set_touch(touching, x, y);
+}
+
+struct LobbyOptions {
+    std::string server;  // ADDRESS[:PORT]; empty: no lobby
+    std::string create;  // code file, when this one makes the room
+    std::string join;    // CODE or @FILE
+    int character = 0;
+    int start_players = 4;
+    bool exit_after_start = false;
+};
+
+int character_by_name(const char* name) {
+    for (int i = 0; i < lobby::kCharacters; ++i) {
+        if (!_stricmp(name, lobby::character_name(i))) return i;
+    }
+    std::fprintf(stderr, "unknown character %s\n", name);
+    std::exit(2);
+}
+
+// Goes through the lobby until the host starts. Returns 0, or 3 if refused or failed.
+int run_lobby(const LobbyOptions& options, const std::string& name, NetSettings& net, MachineSettings& settings) {
+    std::string address = options.server;
+    u16 port = lobby::kDefaultPort;
+    const size_t colon = address.rfind(':');
+    if (colon != std::string::npos) {
+        port = u16(std::atoi(address.c_str() + colon + 1));
+        address.resize(colon);
+    }
+    std::string code = options.join;
+    if (!code.empty() && code[0] == '@') {
+        const std::string path = code.substr(1);
+        for (int waited = 0; !std::filesystem::exists(path); waited += 50) {
+            if (waited > 120000) {
+                std::printf("lobby: no code file %s\n", path.c_str());
+                return 3;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::ifstream file(path);
+        std::getline(file, code);
+    }
+    LobbyClient client;
+    client.connect(address, port, name);
+    bool asked = false, ready_sent = false, start_sent = false, code_written = false;
+    std::uint64_t seen_updates = 0;
+    const auto begin = std::chrono::steady_clock::now();
+    for (;;) {
+        client.poll();
+        const LobbyClient::Phase phase = client.phase();
+        if (phase == LobbyClient::Phase::Failed) return 3;
+        if (phase == LobbyClient::Phase::Menu) {
+            if (asked && client.last_error() != 0) {
+                std::printf("lobby: refused: %s (error %d)\n", client.message().c_str(), client.last_error());
+                return 3;
+            }
+            if (!asked) {
+                if (!options.create.empty()) client.create(options.character);
+                else client.join(code, options.character);
+                asked = true;
+            }
+        }
+        if (phase == LobbyClient::Phase::InRoom) {
+            if (client.room_updates() != seen_updates) {
+                seen_updates = client.room_updates();
+                std::printf("lobby: room %s, own slot %d:", client.code().c_str(), client.own_slot());
+                int present = 0, ready = 0;
+                for (const LobbySeat& seat : client.seats()) {
+                    if (!seat.present) continue;
+                    ++present;
+                    ready += seat.ready;
+                    std::printf(" [%s %s%s %dms]", seat.name.c_str(), lobby::character_name(seat.character),
+                                seat.ready ? " ready" : "", seat.ping_ms);
+                }
+                std::printf("\n");
+                if (!options.create.empty() && present >= options.start_players && ready == present && !start_sent) {
+                    client.start();
+                    start_sent = true;
+                }
+            }
+            if (!options.create.empty() && !code_written) {
+                code_written = true;
+                if (options.create != "-") {
+                    const std::string temporary = options.create + ".new";
+                    { std::ofstream(temporary) << client.code() << "\n"; }
+                    std::filesystem::rename(temporary, options.create);
+                }
+            }
+            if (options.create.empty() && !ready_sent) {
+                client.set_ready(true);
+                ready_sent = true;
+            }
+            if (start_sent && client.last_error() != 0) {
+                std::printf("lobby: start refused: %s\n", client.message().c_str());
+                return 3;
+            }
+        }
+        if (phase == LobbyClient::Phase::Started) break;
+        if (std::chrono::steady_clock::now() - begin > std::chrono::seconds(180)) {
+            std::printf("lobby: no start within 180 s\n");
+            return 3;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    LobbyStart start = client.take_start();
+    net.role = start.slot == 0 ? NetRole::Host : NetRole::Guest;
+    net.relay = start.socket;
+    net.relay_inbox = std::move(start.inbox);
+    net.character = start.characters[size_t(start.slot)];
+    if (net.role == NetRole::Guest) settings.boot_type = 2;
+    std::printf("lobby: player %d of %d, %s\n", start.slot + 1, start.players, lobby::character_name(net.character));
+    return 0;
 }
 
 // --force-mode MODE: the first time the game picks its next mode after the title (mode 0x86, the
@@ -308,6 +436,10 @@ void watch_progress(const Cpu& c) {
             std::printf("watched %08x first reached at game tick %llu\n", c.pc, static_cast<unsigned long long>(g_game_ticks));
         }
     }
+    if (!g_traced.empty() && g_traced.count(c.pc) != 0) {
+        std::printf("trace %08x r0=%08x r1=%08x lr=%08x tick %llu\n", c.pc, c.r[0], c.r[1], c.r[14],
+                    static_cast<unsigned long long>(g_game_ticks));
+    }
     if (c.pc == kGameTick) ++g_game_ticks;
     const s16 scene = s16(rd16(kModeState));
     if (scene != last_scene) {
@@ -333,11 +465,21 @@ int main(int argc, char** argv) {
     std::string dump;
     MachineSettings settings;
     NetSettings net;
+    LobbyOptions lobby_options;
+    for (int i = 2; i + 1 < argc; i += 2) {
+        if (!std::strcmp(argv[i], "--lobby")) lobby_options.server = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--create")) lobby_options.create = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--join")) lobby_options.join = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--character")) lobby_options.character = character_by_name(argv[i + 1]);
+        else if (!std::strcmp(argv[i], "--start-players")) lobby_options.start_players = std::atoi(argv[i + 1]);
+        else if (!std::strcmp(argv[i], "--lobby-exit")) lobby_options.exit_after_start = std::atoi(argv[i + 1]) != 0;
+    }
     for (int i = 2; i + 1 < argc; i += 2) {
         if (!std::strcmp(argv[i], "--stop")) stop = u32(std::strtoul(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--dump")) dump = argv[i + 1];
         else if (!std::strcmp(argv[i], "--max-blocks")) max_blocks = std::strtoull(argv[i + 1], nullptr, 0);
         else if (!std::strcmp(argv[i], "--watch")) g_watched[u32(std::strtoul(argv[i + 1], nullptr, 0))] = 0;
+        else if (!std::strcmp(argv[i], "--trace")) g_traced.insert(u32(std::strtoul(argv[i + 1], nullptr, 0)));
         else if (!std::strcmp(argv[i], "--dump-tick")) g_dump_ticks.insert(std::strtoull(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--dump-step")) g_dump_steps.insert(std::strtoull(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--frame-range")) {
@@ -377,8 +519,13 @@ int main(int argc, char** argv) {
         print_progress();
         print_hot_blocks();
     });
-    machine_boot(rom, settings);
     net.name = settings.player_name;
+    if (!lobby_options.server.empty()) {
+        const int result = run_lobby(lobby_options, settings.player_name, net, settings);
+        if (result != 0) return result;
+        if (lobby_options.exit_after_start) return 0;
+    }
+    machine_boot(rom, settings);
     net_start(net);
     const bool net_running = net.role != NetRole::Off;
 

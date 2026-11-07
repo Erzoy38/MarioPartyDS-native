@@ -198,7 +198,7 @@ Jede Phase hat ein prüfbares Ziel. Eine Phase gilt erst als fertig, wenn es am 
 | 7 | Lokale Vollständigkeit. **Erreicht mit Einschränkungen** (siehe unten) | Eine Party lokal von Anfang bis Ende; Minispiel-Matrix lokal |
 | 8 | Netz im eigenen Rechner: Lockstep, Server headless | 4 Prozesse lokal, Prüfsummen gleich über eine ganze Partie |
 | 9 | Minispiele einzeln online, Matrix mit 73 Zeilen. **Erreicht mit Einschränkungen** (siehe unten) | Jedes Spiel gestartet, gespielt, Ergebnis gleich bei allen; Grenzen dokumentiert |
-| 10 | Lobby, Codes, Charakterwahl, Oberfläche | Ablauf von Raum bis Start in 4 Prozessen |
+| 10 | Lobby, Codes, Charakterwahl, Oberfläche. **Erreicht mit Einschränkungen** (siehe unten) | Ablauf von Raum bis Start in 4 Prozessen |
 | 11 | Abbrüche, Wiedereintritt, Serverneustart, Verzögerung, Ping | Netzsimulator-Tests bestanden |
 | 12 | Internet: Server betreiben, Verschlüsselung, Einstellungen, Vollbild | 4 echte PCs an verschiedenen Standorten spielen eine Party |
 
@@ -426,6 +426,54 @@ Nach den Korrekturen liefen die Spiele beim nächsten Lauf durch.
 - Eingaben gescriptet, nichts gezielt gespielt. Ob jedes Spiel mit echten Spielern richtig zu bedienen ist, ist nicht geprüft. Pustespiele haben im Netz nur „pusten oder nicht“.
 - Gleichheit nur über Schritte und Bilder. Der Hauptspeicher wurde nicht je Spiel verglichen.
 - Weiter nur ein Rechner, kein echtes Netz.
+
+### Ergebnis Phase 10 [gemessen, Server und 4 Prozesse auf einem PC; Fenster mit echten Maus- und Tastaturereignissen]
+
+**Aufbau:**
+
+| Teil | Datei | Aufgabe |
+|---|---|---|
+| Server | `native/server/server.cpp` → `MarioPartyDS-server.exe` | Lobby und Codes; nach dem Start Weiterleitung des Spielverkehrs. Enthält keinen Spielcode und keine Spielinhalte |
+| Protokoll | `native/runtime/lobby_protocol.h` | TCP, Nachrichten mit Länge und Typ, Zahlen little endian |
+| Client | `native/runtime/lobby.cpp` | Verbinden, Raum erstellen und beitreten, Figur, Bereit, Start, Ping jede Sekunde |
+| Weiterleitung | `native/runtime/net.cpp` | Der Host hat eine Verbindung zum Server für alle Gäste. Spielernummer = Platz in der Lobby |
+| Figurenwahl | `native/runtime/net.cpp` | Die Lobby-Figur wird auf dem Figurenbildschirm des Spiels getippt. Die Auswahllogik bleibt die des Spiels |
+| Oberfläche | `native/src/launcher.cpp` | Hauptmenü, Online, Beitreten, Raum, Einstellungen; Esc im Spiel fragt „Zurück zum Hauptmenü?“ |
+
+**Codes:** 6 Zeichen aus `A–Z` und `2–9` ohne `I`, `O`, `0` und `1`. Nur der Server vergibt sie. Ein Code verfällt nach 30 Minuten ohne Start (`--code-lifetime`) oder wenn der Host geht. Verbrauchte Codes werden nicht neu vergeben und als „abgelaufen“ gemeldet.
+
+**Figurenbildschirm erkennen:** Das Spiel holt den Hinweis „Select a character.“ (Host) oder „P2/P3/P4, select a character.“ über `get_message` (`0x020187F4`). Die Text-IDs stammen aus der Pfadtabelle `0x02098BA0`:
+
+| Datei | Host | P2 |
+|---|---|---|
+| `0x04` (Party) | `0x0F` | `0x11` |
+| `0x17` (mgbridge) | `0x1E` | `0x4C` |
+| `0x19` (Free Play) | `0x01` | `0x08` |
+| `0x1A`, `0x1B`, `0x1C` | `0x00` | `0x24`, `0x23`, `0x2E` |
+| `0x1E` (Puzzle) | `0x01` | `0x0B` |
+| `0x20` (Extra) | `0x12` | `0x13` |
+
+60 Ticks nach dem Hinweis tippt das Programm die Figur an. Die Knöpfe liegen in zwei Spalten: x 75 und x 184, y 36 + 30 × Zeile.
+
+**Belegt:**
+
+| Prüfung | Ergebnis |
+|---|---|
+| Regeln des Servers (`tools/lobby_test.py --rules`, Protokoll direkt) | 16 von 16: Codeformat, kein doppelter Code bei 21 Räumen, vier Spieler sehen einander, Code in Kleinbuchstaben, unbekannter Code, fünfter Spieler, belegte Figur beim Beitritt und beim Wechsel, Start nur durch den Host und nur wenn alle bereit sind, Verlassen und Verbindungsabbruch aktualisieren die anderen, Host geht = Raum zu, gestarteter Raum nimmt niemanden auf, Weiterleitung in beide Richtungen und Meldung eines weggefallenen Gastes, falsche Version, ungültige Namen, kaputte Nachrichten (der Server läuft danach weiter), abgelaufener Code |
+| Echter Client abgewiesen | `--join ABCDEF` endet mit Code 3 und „Diesen Code gibt es nicht.“ |
+| Raum bis Spiel, 4 Prozesse (`--game`) | Host erstellt, 3 Gäste treten mit dem Code bei, Start; Spieler 1 bis 4 in Beitrittsreihenfolge. Jeder tippt seine Figur selbst (Mario, Luigi, Peach, Yoshi), alle bei Schritt 1609; auf dem Bild des Hosts stehen P1 bis P4 mit diesen Figuren. Minispiel (Szene 1) bei allen von Schritt 3759 bis 5785 |
+| Fenster als Host | Hauptmenü → Online → Raum erstellen → Code erscheint; Gast tritt bei und erscheint; Figur mit Pfeiltaste gewechselt (Peach → Daisy), beim Gast sichtbar; Spiel starten → beide booten, Titel „online, P1 von 2“ |
+| Fenster als Gast | Einstellungen sichtbar; Code getippt (mit Korrektur per Rücktaste), Beitreten, Bereit; der Host startet; das Fenster zeigt beim Warten „Warte auf die anderen Spieler …“ und reagiert weiter |
+
+**Abweichungen von der Architektur:** Lobby über einfaches TCP mit eigenem Binärformat, nicht WebSocket und MessagePack. Der Server ist für den Start ein Vermittler, autoritativ ist weiterhin die Host-Instanz des Spiels. TLS fehlt (Phase 12).
+
+**Grenzen:**
+- Nur auf einem PC getestet (`--bind 127.0.0.1`). Der Server wartet sonst auf allen Adressen. Windows fragt dann einmal nach einer Firewall-Freigabe; die Entscheidung bleibt beim Nutzer.
+- Die automatische Figurenwahl ist nur in Free Play geprüft. Die übrigen Modi sind aus den Texten abgeleitet; die Lage der Knöpfe dort ist nicht geprüft.
+- Wer das Spiel verlässt oder die Verbindung verliert, beendet die Partie für alle (Phase 11).
+- Die Oberfläche nutzt die eingebaute SDL-Schrift (ASCII; Umlaute als Punkte über dem Buchstaben, ß als „ss“) und die Farben der Spielmenüs, nicht die Schrift des Spiels.
+- „Zurück zum Hauptmenü“ startet das Programm neu, weil die Maschine nur einmal je Prozess bootet.
+- Gamepad im Menü: Steuerkreuz, A und B, ohne Test mit echtem Controller.
 
 **Parallel möglich:** 2D und Sound nach Phase 3. Lobby-Server nach Phase 0, unabhängig vom Spiel.
 

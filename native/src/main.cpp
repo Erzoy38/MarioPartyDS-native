@@ -1,16 +1,23 @@
 // The game in a window: two screens one above the other, keyboard, mouse and gamepad.
 //
 // Usage: MarioPartyDS.exe [rom.nds] [--scale N] [--fullscreen] [--frames N] [--save FILE]
-//        [--screenshot FILE.rgba] [--smoke-test]
+//        [--screenshot FILE.rgba] [--smoke-test] [--local] [--menu]
 //
-// --frames N       closes after N pictures, for tests
+// Starts with the menu (local game, online play, settings) unless --local or --frames is given.
+// --frames N       closes after N pictures, for tests; starts the local game directly
 // --screenshot F   writes the last picture to F as raw RGBA, for tests
 // --smoke-test     opens the window and closes it again, without a game
+// --local          the local game, without the menu
+// --menu           the menu even with --frames
+// --settings FILE  settings from FILE instead of settings.ini in the program's data folder
+// In the game, Esc asks whether to go back to the main menu.
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
 #include "hw.h"
+#include "launcher.h"
 #include "machine.h"
+#include "net.h"
 #include "ppu.h"
 #include "sound.h"
 
@@ -180,21 +187,54 @@ void draw_pointer(u8* picture) {
     }
 }
 
+// While the network waits for the other players: the window keeps answering and says so.
+SDL_Renderer* g_renderer = nullptr;
+SDL_Texture* g_texture = nullptr;
+
+void on_network_wait() {
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_EVENT_QUIT) {
+            std::printf("closed while waiting for the other players\n");
+            SDL_Quit();
+            std::exit(0);
+        }
+    }
+    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(g_renderer);
+    SDL_RenderTexture(g_renderer, g_texture, nullptr, nullptr);
+    draw_question(g_renderer, "Warte auf die anderen", "Spieler ...");
+    SDL_RenderPresent(g_renderer);
+}
+
+// Starts this program again with the menu, after the game has ended.
+void restart_with_menu(const std::string& rom_path) {
+    const char* base = SDL_GetBasePath();
+    const std::string exe = std::string(base ? base : "") + "MarioPartyDS.exe";
+    const char* args[] = {exe.c_str(), rom_path.c_str(), "--menu", nullptr};
+    SDL_Process* process = SDL_CreateProcess(args, false);
+    if (process == nullptr) std::printf("restart failed: %s\n", SDL_GetError());
+    else SDL_DestroyProcess(process);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string rom_path, save_arg, screenshot;
-    int scale = 2;
-    bool fullscreen = false, smoke_test = false;
+    std::string rom_path, save_arg, screenshot, settings_arg;
+    int scale = -1;
+    bool fullscreen = false, smoke_test = false, local = false, force_menu = false;
     long long frame_limit = -1;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--smoke-test") smoke_test = true;
         else if (arg == "--fullscreen") fullscreen = true;
+        else if (arg == "--local") local = true;
+        else if (arg == "--menu") force_menu = true;
         else if (arg == "--scale" && i + 1 < argc) scale = std::clamp(std::atoi(argv[++i]), 1, 8);
         else if (arg == "--frames" && i + 1 < argc) frame_limit = std::atoll(argv[++i]);
         else if (arg == "--save" && i + 1 < argc) save_arg = argv[++i];
         else if (arg == "--screenshot" && i + 1 < argc) screenshot = argv[++i];
+        else if (arg == "--settings" && i + 1 < argc) settings_arg = argv[++i];
         else if (arg.rfind("--", 0) != 0) rom_path = arg;
     }
 
@@ -202,6 +242,12 @@ int main(int argc, char** argv) {
         std::printf("SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
+    const std::filesystem::path data_folder = log_path();
+    const std::filesystem::path settings_file =
+        settings_arg.empty() ? data_folder / "settings.ini" : std::filesystem::u8path(settings_arg);
+    AppSettings app = load_settings(settings_file);
+    if (scale < 0) scale = app.scale;
+    fullscreen = fullscreen || app.fullscreen;
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
     if (!SDL_CreateWindowAndRenderer("Mario Party DS", kWidth * scale, kHeight * scale,
@@ -222,11 +268,17 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    const std::filesystem::path data_folder = log_path();
-    FILE* log = std::freopen((data_folder / "MarioPartyDS.log").string().c_str(), "w", stdout);
+    // With --settings the log goes next to that file, so test windows do not share one.
+    std::filesystem::path log_file = data_folder / "MarioPartyDS.log";
+    if (!settings_arg.empty()) log_file = std::filesystem::path(settings_file).replace_extension(".log");
+    FILE* log = std::freopen(log_file.string().c_str(), "w", stdout);
     (void)log;
     machine_set_abort_hook(on_abort);
 
+    std::error_code missing;
+    if (rom_path.empty() && !app.rom.empty() && std::filesystem::exists(std::filesystem::u8path(app.rom), missing)) {
+        rom_path = app.rom;
+    }
     if (rom_path.empty()) rom_path = ask_for_rom(window);
     if (rom_path.empty()) {
         SDL_Quit();
@@ -239,13 +291,52 @@ int main(int argc, char** argv) {
         SDL_Quit();
         return 2;
     }
+    if (app.rom != rom_path) {
+        app.rom = rom_path;
+        save_settings(settings_file, app);
+    }
+
+    // The menu: local game, or a room on the lobby server.
+    NetSettings net;
+    MachineSettings settings;
+    if (force_menu || (!local && frame_limit < 0)) {
+        LaunchChoice choice = run_launcher(window, renderer, app, settings_file);
+        if (choice.kind == LaunchChoice::Kind::Quit) {
+            SDL_Quit();
+            return 0;
+        }
+        if (choice.kind == LaunchChoice::Kind::Online) {
+            const LobbyStart& start = choice.start;
+            net.role = start.slot == 0 ? NetRole::Host : NetRole::Guest;
+            net.relay = start.socket;
+            net.relay_inbox = start.inbox;
+            net.character = start.characters[size_t(start.slot)];
+            net.name = app.name;
+            if (net.role == NetRole::Guest) settings.boot_type = 2;
+            const std::string title = "Mario Party DS - online, P" + std::to_string(start.slot + 1) + " von " +
+                                      std::to_string(start.players);
+            SDL_SetWindowTitle(window, title.c_str());
+        }
+    }
+    settings.player_name = app.name;
 
     // The game's own save stays with this program; a save from an emulator is never touched.
     const std::filesystem::path save_path =
         save_arg.empty() ? data_folder / "MarioPartyDS.sav" : std::filesystem::u8path(save_arg);
-    MachineSettings settings;
     settings.save = read_file(save_path);
     machine_boot(rom, settings);
+    g_renderer = renderer;
+    g_texture = texture;
+    net_set_wait_callback(on_network_wait);
+    net_start(net);
+    bool asking_to_leave = false, back_to_menu = false;
+    {
+        // Gamepads that the menu opened came before this loop; take the first one.
+        int count = 0;
+        SDL_JoystickID* pads = SDL_GetGamepads(&count);
+        if (pads != nullptr && count > 0) g_pad.handle = SDL_OpenGamepad(pads[0]);
+        SDL_free(pads);
+    }
 
     // Sound: samples are made in step with the game, and the device plays them as they come.
     const SDL_AudioSpec audio_spec{SDL_AUDIO_S16, 2, int(kSoundRate)};
@@ -272,6 +363,12 @@ int main(int argc, char** argv) {
                 } else if (event.key.scancode == SDL_SCANCODE_F10 && !fullscreen) {
                     scale = scale % 4 + 1;
                     SDL_SetWindowSize(window, kWidth * scale, kHeight * scale);
+                } else if (event.key.scancode == SDL_SCANCODE_ESCAPE) {
+                    asking_to_leave = !asking_to_leave;
+                } else if (asking_to_leave && (event.key.scancode == SDL_SCANCODE_RETURN
+                                               || event.key.scancode == SDL_SCANCODE_KP_ENTER)) {
+                    back_to_menu = true;
+                    running = false;
                 }
             }
             if (event.type == SDL_EVENT_GAMEPAD_ADDED && g_pad.handle == nullptr) {
@@ -297,9 +394,15 @@ int main(int argc, char** argv) {
         hw_set_mic(SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_SPACE]
                    || (g_pad.handle != nullptr
                        && SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000));
-        if (mouse_touch) hw_set_touch(true, u32(logical_x), u32(logical_y) - kScreenHeight);
+        u32 auto_x = 0, auto_y = 0;
+        if (net_auto_touch(auto_x, auto_y)) hw_set_touch(true, auto_x, auto_y);  // the lobby's character
+        else if (mouse_touch) hw_set_touch(true, u32(logical_x), u32(logical_y) - kScreenHeight);
         else if (g_pad.touching) hw_set_touch(true, u32(g_pad.pointer_x), u32(g_pad.pointer_y));
         else hw_set_touch(false, 0, 0);
+        if (asking_to_leave) {  // the question takes the keys; the game goes on (others may be playing)
+            hw_set_keys(0);
+            hw_set_touch(false, 0, 0);
+        }
 
         machine_run_frame();
         ++frames;
@@ -326,6 +429,7 @@ int main(int argc, char** argv) {
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
         SDL_RenderTexture(renderer, texture, nullptr, nullptr);
+        if (asking_to_leave) draw_question(renderer, "Zurück zum Hauptmenü?", "Enter: ja    Esc: nein");
         SDL_RenderPresent(renderer);
 
         next_frame += ticks_per_frame;
@@ -345,6 +449,8 @@ int main(int argc, char** argv) {
         out.write(reinterpret_cast<const char*>(ppu_frame()), std::streamsize(picture.size()));
     }
     std::printf("frames %lld, ended normally\n", frames);
+    // The machine cannot be booted twice in one process; the menu comes back as a new one.
+    if (back_to_menu) restart_with_menu(rom_path);
     SDL_Quit();
     return 0;
 }

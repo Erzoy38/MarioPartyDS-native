@@ -2,6 +2,8 @@
 #define NOMINMAX
 #include "net.h"
 
+#include "lobby_protocol.h"
+
 #include "machine.h"
 #include "memory.h"
 
@@ -45,6 +47,7 @@ enum MbEvent : u32 {
 };
 
 NetSettings g_settings;
+NetWaitCallback g_wait_callback = nullptr;
 u32 g_own_aid = 0;  // guest: the player number the host gave
 NetStats g_stats;
 bool g_started = false;
@@ -61,11 +64,16 @@ struct Guest {
     u32 aid = 0;
     int mb_stage = 0;        // how far the download-play events have come
     bool connected = false;  // takes part in the record exchange
+    std::deque<std::pair<u8, std::vector<u8>>> queue;  // relayed messages not read yet
     u64 first_step = 0;      // host step at which this guest's first record counts
     std::deque<std::vector<u8>> records;
     std::vector<u8> inbox;
 };
 std::map<u32, Guest> g_guests;  // by aid
+
+// Through MarioPartyDS-server: the host has one connection for all guests (lobby_protocol.h).
+SOCKET g_relay = INVALID_SOCKET;
+std::vector<u8> g_relay_inbox;
 
 // Port data (WH send) that has arrived and waits for the game's receive callback: sender aid, bytes.
 struct Block {
@@ -102,13 +110,22 @@ bool read_message(SOCKET s, std::vector<u8>& inbox, u8& type, std::vector<u8>& b
                 return true;
             }
         }
-        fd_set set;
-        FD_ZERO(&set);
-        FD_SET(s, &set);
-        timeval timeout{0, 0};
-        if (wait_ms >= 0) timeout = {wait_ms / 1000, (wait_ms % 1000) * 1000};
-        timeval long_wait{20, 0};  // a player gone for 20 s ends the run for now (phase 11 handles it)
-        const int ready = select(0, &set, nullptr, nullptr, wait_ms < 0 ? &long_wait : &timeout);
+        // A player gone for 20 s ends the run for now (phase 11 handles it). Waits in slices of
+        // 100 ms, so a window can keep answering in between (net_set_wait_callback).
+        const ULONGLONG limit = wait_ms < 0 ? 20000 : ULONGLONG(wait_ms);
+        const ULONGLONG begin = GetTickCount64();
+        int ready = 0;
+        for (;;) {
+            fd_set set;
+            FD_ZERO(&set);
+            FD_SET(s, &set);
+            const ULONGLONG waited = GetTickCount64() - begin;
+            const ULONGLONG slice = std::min<ULONGLONG>(100, limit > waited ? limit - waited : 0);
+            timeval timeout{0, long(slice * 1000)};
+            ready = select(0, &set, nullptr, nullptr, &timeout);
+            if (ready != 0 || GetTickCount64() - begin >= limit) break;
+            if (g_wait_callback != nullptr) g_wait_callback();
+        }
         if (ready == 0) {
             if (wait_ms < 0) runtime_abort("network: nothing from the other side for 20 s, at step", u32(g_stats.steps));
             return false;
@@ -118,6 +135,48 @@ bool read_message(SOCKET s, std::vector<u8>& inbox, u8& type, std::vector<u8>& b
         if (n <= 0) runtime_abort("network: connection closed, at step", u32(g_stats.steps));
         inbox.insert(inbox.end(), buffer, buffer + n);
     }
+}
+
+void guest_send(Guest& guest, u8 type, const std::vector<u8>& body) {
+    if (g_relay == INVALID_SOCKET) {
+        send_message(guest.socket, type, body);
+        return;
+    }
+    std::vector<u8> wrapped{u8(guest.aid), type};
+    wrapped.insert(wrapped.end(), body.begin(), body.end());
+    send_message(g_relay, lobby::kRelayTo, wrapped);
+}
+
+void take_in_guest(u32 aid, SOCKET s, const std::vector<u8>& hello);
+
+// Reads one message from the server and files it with its guest. False if none came in time.
+bool relay_pump(int wait_ms) {
+    u8 type;
+    std::vector<u8> body;
+    if (!read_message(g_relay, g_relay_inbox, type, body, wait_ms)) return false;
+    if (type == lobby::kRelayGone && !body.empty()) runtime_abort("network: a player left the game, player", body[0] + 1u);
+    if (type != lobby::kRelayFrom || body.size() < 2) return true;
+    const u32 aid = body[0];
+    const u8 inner = body[1];
+    std::vector<u8> rest(body.begin() + 2, body.end());
+    auto it = g_guests.find(aid);
+    if (it == g_guests.end()) {
+        if (inner == kHello && aid >= 1 && aid <= 3) take_in_guest(aid, INVALID_SOCKET, rest);
+        return true;
+    }
+    it->second.queue.push_back({inner, std::move(rest)});
+    return true;
+}
+
+bool guest_read(Guest& guest, u8& type, std::vector<u8>& body, int wait_ms) {
+    if (g_relay == INVALID_SOCKET) return read_message(guest.socket, guest.inbox, type, body, wait_ms);
+    while (guest.queue.empty()) {
+        if (!relay_pump(wait_ms)) return false;
+    }
+    type = guest.queue.front().first;
+    body = std::move(guest.queue.front().second);
+    guest.queue.pop_front();
+    return true;
 }
 
 // --- Calling the game's own code from here ---
@@ -181,7 +240,23 @@ void mb_event(const Guest& guest, u32 event) {
     call_game(kMbCallback, guest.aid, event, kScratch);
 }
 
+void take_in_guest(u32 aid, SOCKET s, const std::vector<u8>& hello) {
+    Guest& guest = g_guests[aid];
+    guest.socket = s;
+    guest.aid = aid;
+    guest.name.assign(hello.begin(), hello.end());
+    // What a download boot leaves to the guest: its aid and the host's download parameter, whose
+    // first byte is the game language the host chose (0x020C9210, read back at 0x0201A8B8).
+    guest_send(guest, kWelcome, {u8(aid), rd8(kLanguage)});
+    std::printf("net: guest %u \"%s\" is here\n", aid, guest.name.c_str());
+}
+
 void host_accept() {
+    if (g_relay != INVALID_SOCKET) {
+        while (relay_pump(0)) {
+        }
+        return;
+    }
     if (g_listen == INVALID_SOCKET) return;
     for (;;) {
         fd_set set;
@@ -197,18 +272,13 @@ void host_accept() {
             closesocket(s);
             continue;
         }
-        Guest& guest = g_guests[aid];
-        guest.socket = s;
-        guest.aid = aid;
+        std::vector<u8> inbox;
         u8 type;
         std::vector<u8> body;
-        read_message(s, guest.inbox, type, body, -1);
+        read_message(s, inbox, type, body, -1);
         if (type != kHello) runtime_abort("network: guest did not say hello", type);
-        guest.name.assign(body.begin(), body.end());
-        // What a download boot leaves to the guest: its aid and the host's download parameter, whose
-        // first byte is the game language the host chose (0x020C9210, read back at 0x0201A8B8).
-        send_message(s, kWelcome, {u8(aid), rd8(kLanguage)});
-        std::printf("net: guest %u \"%s\" is here\n", aid, guest.name.c_str());
+        take_in_guest(aid, s, body);
+        g_guests[aid].inbox = std::move(inbox);
     }
 }
 
@@ -375,7 +445,7 @@ bool wh_hook(Cpu& c) {
             for (u32 i = 0; i < c.r[1]; ++i) data[i] = rd8(c.r[0] + i);
             if (g_settings.role == NetRole::Host) {
                 for (auto& [aid, guest] : g_guests) {
-                    if (guest.connected) send_message(guest.socket, kBlock, data);
+                    if (guest.connected) guest_send(guest, kBlock, data);
                 }
             } else {
                 send_message(g_host, kBlock, data);
@@ -417,7 +487,7 @@ bool step_hook(Cpu& c) {
             while (guest.records.empty()) {
                 u8 type;
                 std::vector<u8> body;
-                read_message(guest.socket, guest.inbox, type, body, -1);
+                guest_read(guest, type, body, -1);
                 if (type == kRecord) guest.records.push_back(body);
                 else if (type == kBlock) g_blocks.push_back({aid, body});
             }
@@ -430,7 +500,7 @@ bool step_hook(Cpu& c) {
         std::memcpy(packet.data() + 2, &step, 8);
         std::copy(records.begin(), records.end(), packet.begin() + 10);
         for (auto& [aid, guest] : g_guests) {
-            if (guest.connected) send_message(guest.socket, kStep, packet);
+            if (guest.connected) guest_send(guest, kStep, packet);
         }
         store_step(records, bitmap, step);
     } else {
@@ -469,7 +539,18 @@ void net_start(const NetSettings& settings) {
     where.sin_family = AF_INET;
     where.sin_port = htons(settings.port);
     inet_pton(AF_INET, settings.address.c_str(), &where.sin_addr);
-    if (settings.role == NetRole::Host) {
+    if (settings.relay != 0) {
+        // Through the server: the lobby's connection, already open (lobby.h).
+        const SOCKET relay = static_cast<SOCKET>(settings.relay);
+        if (settings.role == NetRole::Host) {
+            g_relay = relay;
+            g_relay_inbox = settings.relay_inbox;
+            std::printf("net: host through the server\n");
+        } else {
+            g_host = relay;
+            g_host_inbox = settings.relay_inbox;
+        }
+    } else if (settings.role == NetRole::Host) {
         g_listen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         BOOL yes = TRUE;
         setsockopt(g_listen, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof yes);
@@ -485,6 +566,8 @@ void net_start(const NetSettings& settings) {
         }
         BOOL yes = TRUE;
         setsockopt(g_host, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&yes), sizeof yes);
+    }
+    if (settings.role == NetRole::Guest) {
         send_message(g_host, kHello, std::vector<u8>(settings.name.begin(), settings.name.end()));
         u8 type;
         std::vector<u8> body;
@@ -498,6 +581,61 @@ void net_start(const NetSettings& settings) {
     g_started = true;
 }
 
+namespace {
+
+// The character chosen in the lobby is tapped on the game's own character screen, so the game
+// keeps its own choice logic. The screen is recognised by its prompt, which the game fetches through
+// get_message (0x020187F4, r0 = file << 16 | message) when it asks this player. Message ids are the
+// same in all languages; files by index from the path table at 0x02098BA0.
+struct CharacterPrompt {
+    u32 file;
+    u32 host;  // "Select a character."
+    u32 p2;    // "P2, select a character."; P3 and P4 follow
+    u32 guests;
+};
+constexpr CharacterPrompt kCharacterPrompts[] = {
+    {0x04, 0x0F, 0x11, 3},  // mpd_030_party_mode
+    {0x17, 0x1E, 0x4C, 3},  // mpd_097_mgbridge
+    {0x19, 0x01, 0x08, 3},  // mpd_101_mgfreeplay
+    {0x1A, 0x00, 0x24, 3},  // mpd_102_mgkachinuki
+    {0x1B, 0x00, 0x23, 3},  // mpd_103_mgcup
+    {0x1C, 0x00, 0x2E, 3},  // mpd_104_mgscoreat
+    {0x1E, 0x01, 0x0B, 3},  // mpd_110_puz_mode
+    {0x20, 0x12, 0x13, 1},  // mpd_130_extra_mode
+};
+constexpr u32 kGetMessage = 0x020187F4;
+constexpr int kPickDelay = 60;  // ticks: the screen slides in after its prompt is fetched
+constexpr int kPickFrames = 6;
+
+int g_pick_countdown = -1;  // ticks until the tap; -1 none
+int g_pick_frames = 0;
+
+bool is_own_prompt(u32 id) {
+    const u32 file = id >> 16, message = id & 0xFFFF;
+    for (const CharacterPrompt& prompt : kCharacterPrompts) {
+        if (prompt.file != file) continue;
+        if (g_settings.role == NetRole::Host) return message == prompt.host;
+        return g_own_aid >= 1 && g_own_aid <= prompt.guests && message == prompt.p2 + g_own_aid - 1;
+    }
+    return false;
+}
+
+void watch_character_prompt(const Cpu& c) {
+    if (c.pc != kGetMessage || g_settings.character < 0 || !is_own_prompt(c.r[0])) return;
+    g_pick_countdown = kPickDelay;
+    std::printf("net: character screen (message %08x) at step %llu\n", c.r[0], static_cast<unsigned long long>(g_stats.steps));
+}
+
+}  // namespace
+
+bool net_auto_touch(u32& x, u32& y) {
+    if (g_pick_frames <= 0) return false;
+    const int character = g_settings.character;
+    x = character < 4 ? 75 : 184;  // two columns of four buttons
+    y = 36 + 30 * u32(character % 4);
+    return true;
+}
+
 bool net_hook(Cpu& c) {
     if (!g_started) return false;
     if (g_fs_start_return != 0 && (c.pc | c.thumb) == g_fs_start_return) {
@@ -505,6 +643,7 @@ bool net_hook(Cpu& c) {
         g_fs_start_return = 0;
     }
     if (c.pc < 0x02009000 || c.pc > 0x02080000) return false;
+    watch_character_prompt(c);
     if (g_settings.role == NetRole::Host && host_hook(c)) return true;
     if (wh_hook(c)) return true;
     return step_hook(c);
@@ -531,6 +670,13 @@ void deliver_blocks() {
 
 void net_tick() {
     if (!g_started) return;
+    if (g_pick_frames > 0) --g_pick_frames;
+    if (g_pick_countdown > 0 && --g_pick_countdown == 0) {
+        g_pick_countdown = -1;
+        g_pick_frames = kPickFrames;
+        std::printf("net: picks %s at step %llu\n", lobby::character_name(g_settings.character),
+                    static_cast<unsigned long long>(g_stats.steps));
+    }
     deliver_blocks();
     if (g_settings.role == NetRole::Host) {
         host_accept();
@@ -560,7 +706,7 @@ void net_tick() {
                 set_bitmap(bitmap);
                 std::vector<u8> body(2);
                 std::memcpy(body.data(), &bitmap, 2);
-                send_message(guest.socket, kJoined, body);
+                guest_send(guest, kJoined, body);
                 std::printf("net: guest %u joins the exchange at step %llu\n", aid,
                             static_cast<unsigned long long>(g_stats.steps));
             }
@@ -581,3 +727,5 @@ void net_tick() {
 }
 
 const NetStats& net_stats() { return g_stats; }
+
+void net_set_wait_callback(NetWaitCallback callback) { g_wait_callback = callback; }
