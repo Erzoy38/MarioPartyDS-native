@@ -5,6 +5,8 @@
 unpacked/
 gfx/
 web/
+# Pictures for the start screen (the game's characters).
+native/assets/
 
 # Data generated from the ROM by tools/. Reproducible, and may hold game text or code bytes.
 assets.csv

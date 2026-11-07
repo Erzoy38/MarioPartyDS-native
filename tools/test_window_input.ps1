@@ -1,16 +1,17 @@
 # Starts MarioPartyDS.exe with a test save and works it with real keyboard and mouse events.
 # Only sends anything while the game's own window is in front, otherwise it stops.
-# Usage: powershell -ExecutionPolicy Bypass -File tools\test_window_input.ps1 -Steps "wait=12,key=X,wait=3,click=128;180" -Frames 1500 -Out run\test.rgba [-Save run\test.sav] [-Scale 1] [-ExtraArgs "--menu --settings run\a.ini"]
+# Usage: powershell -ExecutionPolicy Bypass -File tools\test_window_input.ps1 -Steps "wait=12,key=X,wait=3,click=128;180" -Frames 1500 -Out run\test.rgba [-Save run\test.sav] [-Scale 1] [-ExtraArgs "--menu --settings run\a.ini"] [-NoRom]
 # Steps:
 #   wait=SECONDS
 #   key=X          a letter or digit key; key=ENTER, key=ESC, key=BACK, key=UP, key=DOWN, key=LEFT, key=RIGHT
 #   text=ABC       types letters and digits
 #   click=X;Y      pixels on the DS's bottom screen (0..255, 0..191)
-#   tap=X;Y        pixels on both screens together (0..255, 0..383), for the menu
+#   tap=X;Y        pixels on both screens together (0..255, 0..383), for the online menu
+#   start=X;Y      pixels on the start screen (0..1023, 0..575)
 #   shot=FILE.png  a picture of the window
 #   until=TEXT     waits up to 60 s until the log (next to -ExtraArgs' --settings file) holds TEXT
 param([string]$Steps, [int]$Frames = 1500, [string]$Out = "run\window_input.rgba", [string]$Save = "run\window_input.sav",
-      [int]$Scale = 2, [string]$ExtraArgs = "", [int]$ExitWait = 120)
+      [int]$Scale = 2, [string]$ExtraArgs = "", [int]$ExitWait = 120, [switch]$NoRom)
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -40,7 +41,8 @@ $outFull = Join-Path (Get-Location) $Out
 $saveFull = Join-Path (Get-Location) $Save
 $log = $null
 if ($ExtraArgs -match "--settings\s+(\S+)") { $log = [IO.Path]::ChangeExtension((Join-Path (Get-Location) $Matches[1]), ".log") }
-$p = Start-Process -FilePath "native\build\MarioPartyDS.exe" -ArgumentList "`"$rom`" --scale $Scale --frames $Frames --save `"$saveFull`" --screenshot `"$outFull`" $ExtraArgs" -PassThru
+$romArg = if ($NoRom) { "" } else { "`"$rom`"" }  # -NoRom: the start screen without a ROM
+$p = Start-Process -FilePath "native\build\MarioPartyDS.exe" -ArgumentList "$romArg --scale $Scale --frames $Frames --save `"$saveFull`" --screenshot `"$outFull`" $ExtraArgs" -PassThru
 $named = @{ ENTER = 0x0D; ESC = 0x1B; BACK = 0x08; LEFT = 0x25; UP = 0x26; RIGHT = 0x27; DOWN = 0x28 }
 
 function Send-Key([byte]$vk) {
@@ -52,12 +54,12 @@ function Send-Key([byte]$vk) {
     Start-Sleep -Milliseconds 80
 }
 
-function Send-Click($w, [int]$x, [int]$y) {
+function Send-Click($w, [int]$x, [int]$y, [int]$logicalW = 256, [int]$logicalH = 384) {
     $rect = New-Object Win+RECT
     [void][Win]::GetClientRect($w, [ref]$rect)
-    $factor = [math]::Min($rect.R / 256.0, $rect.B / 384.0)
-    $left = ($rect.R - 256 * $factor) / 2
-    $top = ($rect.B - 384 * $factor) / 2
+    $factor = [math]::Min($rect.R / [double]$logicalW, $rect.B / [double]$logicalH)
+    $left = ($rect.R - $logicalW * $factor) / 2
+    $top = ($rect.B - $logicalH * $factor) / 2
     $point = New-Object Win+POINT
     $point.X = [int]($left + ($x + 0.5) * $factor)
     $point.Y = [int]($top + ($y + 0.5) * $factor)
@@ -124,6 +126,9 @@ try {
         } elseif ($name -eq "tap") {
             $x, $y = $value -split ";"
             Send-Click $w ([int]$x) ([int]$y)
+        } elseif ($name -eq "start") {
+            $x, $y = $value -split ";"
+            Send-Click $w ([int]$x) ([int]$y) 1024 576
         }
     }
     if (-not $p.WaitForExit($ExitWait * 1000)) { throw "the game did not end" }

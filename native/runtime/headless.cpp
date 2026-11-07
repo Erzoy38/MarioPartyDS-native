@@ -3,7 +3,7 @@
 //
 // Usage: MarioPartyDS-headless <rom.nds> --stop 0x02003000 --dump <folder> [--max-blocks N]
 //        [--dump-tick N]... [--dump-step N]... [--watch ADDR]... [--name NAME] [--save FILE (read only)]
-//        [--input TICK:WHAT[:FRAMES]]...
+//        [--input TICK:WHAT[:FRAMES]]... [--language N (1 en, 2 fr, 3 de, 4 it, 5 es)]
 //
 // Through the lobby server instead of --net-host/--net-guest:
 //        --lobby ADDRESS[:PORT] --character NAME (--create CODEFILE | --join CODE|@CODEFILE)
@@ -532,6 +532,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--exit-frames")) g_exit_frames = argv[i + 1];
         else if (!std::strcmp(argv[i], "--unlock-minigames")) g_unlock_minigames = std::atoi(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--name")) settings.player_name = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--language")) settings.language = u8(std::atoi(argv[i + 1]));
         else if (!std::strcmp(argv[i], "--boot-type")) settings.boot_type = u16(std::strtoul(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--save")) settings.save = read_file(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--input")) add_input(argv[i + 1]);

@@ -3,7 +3,8 @@
 // Usage: MarioPartyDS.exe [rom.nds] [--scale N] [--fullscreen] [--frames N] [--save FILE]
 //        [--screenshot FILE.rgba] [--smoke-test] [--local] [--menu]
 //
-// Starts with the menu (local game, online play, settings) unless --local or --frames is given.
+// Starts with the start screen (start or choose the ROM, settings, online play) unless --local or
+// --frames is given; the ROM is only needed from there on.
 // --frames N       closes after N pictures, for tests; starts the local game directly
 // --screenshot F   writes the last picture to F as raw RGBA, for tests
 // --smoke-test     opens the window and closes it again, without a game
@@ -20,6 +21,7 @@
 #include "net.h"
 #include "ppu.h"
 #include "sound.h"
+#include "start_screen.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -27,6 +29,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -34,6 +37,8 @@ namespace {
 
 constexpr int kWidth = kScreenWidth;
 constexpr int kHeight = kScreenHeight * 2;
+constexpr int kStartWindowWidth = 1280;  // the start screen's window, 16:9
+constexpr int kStartWindowHeight = 720;
 constexpr double kFramesPerSecond = 59.8261;  // the DS's picture rate
 
 // DS key bits, in the order the hardware uses.
@@ -310,16 +315,35 @@ int main(int argc, char** argv) {
     const std::filesystem::path settings_file =
         settings_arg.empty() ? data_folder / "settings.ini" : std::filesystem::u8path(settings_arg);
     AppSettings app = load_settings(settings_file);
-    if (scale < 0) scale = app.scale;
+    const bool scale_given = scale >= 0;
+    if (!scale_given) scale = app.scale;
     fullscreen = fullscreen || app.fullscreen;
+    const bool use_menu = force_menu || (!local && frame_limit < 0 && !smoke_test);
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
-    if (!SDL_CreateWindowAndRenderer("Mario Party DS", kWidth * scale, kHeight * scale,
-                                     SDL_WINDOW_RESIZABLE, &window, &renderer)) {
+    const int first_w = use_menu ? kStartWindowWidth : kWidth * scale;
+    const int first_h = use_menu ? kStartWindowHeight : kHeight * scale;
+    if (!SDL_CreateWindowAndRenderer("Mario Party DS", first_w, first_h, SDL_WINDOW_RESIZABLE, &window, &renderer)) {
         std::printf("window failed: %s\n", SDL_GetError());
         return 1;
     }
     SDL_SetRenderLogicalPresentation(renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    const auto in_window = [&] { return (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) == 0; };
+    // The start screen is landscape, the game the DS's two screens one above the other.
+    const auto start_layout = [&] {
+        SDL_SetRenderLogicalPresentation(renderer, kStartWidth, kStartHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+        if (in_window()) {
+            SDL_SetWindowSize(window, kStartWindowWidth, kStartWindowHeight);
+            SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        }
+    };
+    const auto game_layout = [&] {
+        SDL_SetRenderLogicalPresentation(renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+        if (in_window()) {
+            SDL_SetWindowSize(window, kWidth * scale, kHeight * scale);
+            SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        }
+    };
     SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
                                              SDL_TEXTUREACCESS_STREAMING, kWidth, kHeight);
     SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST);
@@ -343,24 +367,15 @@ int main(int argc, char** argv) {
     if (rom_path.empty() && !app.rom.empty() && std::filesystem::exists(std::filesystem::u8path(app.rom), missing)) {
         rom_path = app.rom;
     }
-    if (rom_path.empty()) rom_path = ask_for_rom(window);
-    if (rom_path.empty()) {
-        SDL_Quit();
-        return 0;
-    }
-    const std::vector<u8> rom = read_file(std::filesystem::u8path(rom_path));
-    std::string problem = rom.empty() ? "The ROM could not be read." : machine_check_rom(rom);
-    if (!problem.empty()) {
-        show_error(problem);
-        SDL_Quit();
-        return 2;
-    }
-    if (app.rom != rom_path) {
-        app.rom = rom_path;
-        save_settings(settings_file, app);
-    }
+    // The ROM's bytes after the last check that passed.
+    std::vector<u8> rom;
+    const std::function<std::string(const std::string&)> check_rom = [&](const std::string& path) {
+        std::vector<u8> data = read_file(std::filesystem::u8path(path));
+        std::string problem = data.empty() ? "The file could not be read." : machine_check_rom(data);
+        if (problem.empty()) rom = std::move(data);
+        return problem;
+    };
 
-    // The menu: local game, or a room on the lobby server.
     NetSettings net;
     MachineSettings settings;
     // A guest's way back into a game whose program ended without leaving it (closed, crashed).
@@ -369,13 +384,50 @@ int main(int argc, char** argv) {
     NetSettings rejoin;
     std::string rejoin_room;
     if (net_load_rejoin(rejoin_file.string(), rejoin)) rejoin_room = rejoin.code.empty() ? "direkt" : rejoin.code;
-    if (force_menu || (!local && frame_limit < 0)) {
-        LaunchChoice choice = run_launcher(window, renderer, app, settings_file, rejoin_room);
+    if (!use_menu) {
+        // Straight into the game (tests, --local): the ROM from the command line, the settings or a dialog.
+        if (rom_path.empty()) rom_path = ask_for_rom(window);
+        if (rom_path.empty()) {
+            SDL_Quit();
+            return 0;
+        }
+        const std::string problem = check_rom(rom_path);
+        if (!problem.empty()) {
+            show_error(problem);
+            SDL_Quit();
+            return 2;
+        }
+        if (app.rom != rom_path) {
+            app.rom = rom_path;
+            save_settings(settings_file, app);
+        }
+    }
+    // The start screen; online play goes on in the lobby menu, which can come back here.
+    while (use_menu) {
+        start_layout();
+        const StartChoice picked = run_start_screen(window, renderer, app, settings_file, rom_path, check_rom, rejoin_room, "");
+        if (picked.kind == StartChoice::Kind::Quit) {
+            SDL_Quit();
+            return 0;
+        }
+        if (picked.kind == StartChoice::Kind::Local) break;
+        if (picked.kind == StartChoice::Kind::Rejoin) {
+            net = rejoin;
+            net.rejoin_file = rejoin_file.string();
+            settings.boot_type = 2;
+            app.name = net.name;
+            SDL_SetWindowTitle(window, ("Mario Party DS - online, zurück als P" + std::to_string(net.slot + 1)).c_str());
+            break;
+        }
+        if (!scale_given) scale = app.scale;
+        game_layout();
+        LaunchChoice choice = run_launcher(window, renderer, app, settings_file);
         if (choice.kind == LaunchChoice::Kind::Quit) {
             SDL_Quit();
             return 0;
         }
-        if (choice.kind == LaunchChoice::Kind::Online) {
+        if (choice.kind == LaunchChoice::Kind::Back) continue;
+        {
             const LobbyStart& start = choice.start;
             net.role = start.slot == 0 ? NetRole::Host : NetRole::Guest;
             net.relay = start.socket;
@@ -399,15 +451,21 @@ int main(int argc, char** argv) {
                                       std::to_string(start.players);
             SDL_SetWindowTitle(window, title.c_str());
         }
-        if (choice.kind == LaunchChoice::Kind::Rejoin) {
-            net = rejoin;
-            net.rejoin_file = rejoin_file.string();
-            settings.boot_type = 2;
-            app.name = net.name;
-            SDL_SetWindowTitle(window, ("Mario Party DS - online, zurück als P" + std::to_string(net.slot + 1)).c_str());
+        break;
+    }
+    if (use_menu) {
+        // The settings may have changed on the start screen.
+        if (!scale_given) scale = app.scale;
+        fullscreen = !in_window();
+        game_layout();
+        if (app.rom != rom_path) {  // a ROM given on the command line is remembered too
+            app.rom = rom_path;
+            save_settings(settings_file, app);
         }
     }
+    SDL_SetTextureScaleMode(texture, app.smooth ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
     settings.player_name = app.name;
+    settings.language = u8(app.language);
 
     // The game's own save stays with this program; a save from an emulator is never touched.
     const std::filesystem::path save_path =

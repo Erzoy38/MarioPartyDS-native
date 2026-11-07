@@ -16,20 +16,25 @@ struct AppSettings {
     bool fullscreen = false;
     int character = 0;  // lobby::character_name
     std::string rom;
+    int language = 1;     // the game's language: 1 English, 2 French, 3 German, 4 Italian, 5 Spanish
+    bool smooth = false;  // the DS screens smoothed when the window is larger, instead of sharp pixels
 };
 
 AppSettings load_settings(const std::filesystem::path& file);
 void save_settings(const std::filesystem::path& file, const AppSettings& settings);
 
 struct LaunchChoice {
-    enum class Kind { Quit, Local, Online, Rejoin } kind = Kind::Quit;
+    enum class Kind { Quit, Back, Online } kind = Kind::Quit;
     LobbyStart start;  // Online: the started room
 };
 
-// Runs the menu until the player starts a game or closes the window. `rejoin_room` (may be empty)
-// is the room of a game this program left without ending it; the menu then offers to go back.
+// Online play (create or join a room on the lobby server) until a room starts (Online), the player
+// goes back to the start screen (Back) or closes the window (Quit). Drawn in the DS's 256 x 384.
 LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSettings& settings,
-                          const std::filesystem::path& settings_file, const std::string& rejoin_room);
+                          const std::filesystem::path& settings_file);
+
+// The file of server keys seen before, next to the settings.
+std::filesystem::path known_servers_file(const std::filesystem::path& settings_file);
 
 // A box with two lines in the middle of the window, over the game (logical 256 x 384).
 void draw_question(SDL_Renderer* renderer, const std::string& first, const std::string& second);

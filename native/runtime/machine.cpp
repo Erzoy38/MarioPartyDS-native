@@ -52,11 +52,10 @@ void print_state(const Cpu& c) {
 }
 
 // The owner settings the firmware leaves at 0x027FFC80 for the game, in the layout seen in
-// melonDS: version, birthday, name, touch calibration, language. Fixed except for the name, so
-// every player's game starts alike.
-void write_user_settings(const std::string& name) {
+// melonDS: version, birthday, name, touch calibration, language. Fixed except for the name and
+// the language, so every player's game starts alike.
+void write_user_settings(const std::string& name, u8 language) {
     constexpr u32 kSettings = 0x027FFC80;
-    constexpr u32 kLanguageEnglish = 1;
     for (u32 i = 0; i < 0x70; ++i) wr8(kSettings + i, 0);
     wr16(kSettings, 5);       // version
     wr8(kSettings + 3, 1);    // birthday, month
@@ -69,7 +68,7 @@ void write_user_settings(const std::string& name) {
     wr16(kSettings + 0x60, 0x0BF0);
     wr8(kSettings + 0x62, 0xFF);
     wr8(kSettings + 0x63, 0xBF);
-    wr8(kSettings + 0x64, u8(0x30 | kLanguageEnglish));  // upper bits as seen in melonDS
+    wr8(kSettings + 0x64, u8(0x30 | (language & 7)));  // upper bits as seen in melonDS
 }
 
 }  // namespace
@@ -117,7 +116,7 @@ void machine_boot(const std::vector<u8>& rom, const MachineSettings& settings) {
     wr16(0x027FFC40u, settings.boot_type);  // boot type: 1 card, 2 download play
     wr32(0x027FFF8Cu, 0x0003FFF0u);  // ARM7 services ready: the channels set in melonDS
     hw_set_keys(0);
-    write_user_settings(settings.player_name);
+    write_user_settings(settings.player_name, settings.language);
     if (!settings.save.empty()) hw_set_save(settings.save);
     // Boot data the firmware leaves behind, as seen in melonDS. The game compares the chip id
     // here with the card's to detect a removed card.

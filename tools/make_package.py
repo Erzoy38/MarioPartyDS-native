@@ -24,9 +24,12 @@ FILES = [
     (os.path.join("native", "third_party", "SDL3", "LICENSE.txt"), "SDL3-LICENSE.txt"),
 ]
 FORBIDDEN = (".nds", ".sav", ".dsv", ".key", ".ini", ".log", ".rejoin")
+# Taken when present: the start screen's picture (local only, see native/CMakeLists.txt).
+OPTIONAL = [(os.path.join(BUILD, "menu_background.png"), "menu_background.png")]
 
 
 def main():
+    FILES.extend((source, name) for source, name in OPTIONAL if os.path.exists(source))
     for source, name in FILES:
         if not os.path.exists(source):
             sys.exit(f"missing: {source} (build first)")

@@ -27,10 +27,12 @@ anderer als dieser Server ausgeben. Sie bleibt beim Host.
 Erster Start
 ------------
 1. Den Ordner irgendwohin entpacken, zum Beispiel auf den Desktop.
-2. MarioPartyDS.exe starten. Beim ersten Mal fragt das Programm nach der ROM-Datei.
+2. MarioPartyDS.exe starten. Es erscheint der Startbildschirm. „SELECT ROM IMAGE“ fragt einmal nach
+   der ROM-Datei und startet dann das Spiel; danach heißt der Punkt „START GAME“.
 3. Windows zeigt bei unbekannten Programmen eventuell „Der Computer wurde durch Windows geschützt“.
    Dann „Weitere Informationen“ und „Trotzdem ausführen“ wählen, wenn das Paket vom Host stammt.
-4. Unter „Einstellungen“ den eigenen Namen und die Server-Adresse eintragen, die der Host nennt.
+4. Unter „SETTINGS“: Sprache des Spiels (PRELAUNCH), Fenstergröße und Vollbild (VIDEO), eigener
+   Name und die Server-Adresse, die der Host nennt (ONLINE).
 
 Spielstand, Einstellungen und Protokoll liegen unter %APPDATA%\MarioPartyDS\MarioPartyDS\.
 
@@ -46,7 +48,7 @@ Maus              Touchscreen (unterer Bildschirm, linke Maustaste)
 Leertaste         ins Mikrofon pusten
 F10               Fenstergröße
 F11               Vollbild
-Esc               Zurück zum Hauptmenü
+Esc               Zurück zum Startbildschirm
 
 Controller (wird erkannt, sobald er angeschlossen ist): Tasten wie beim DS (A rechts, B unten,
 X oben, Y links), Schultertasten L/R, Start, Back = Select. Der rechte Stick bewegt einen Zeiger

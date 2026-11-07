@@ -39,10 +39,17 @@ target_compile_options(MarioPartyDS-server PRIVATE /W4 /WX /utf-8)
 
 set(SDL3_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL3/cmake")
 find_package(SDL3 REQUIRED CONFIG)
-add_executable(MarioPartyDS WIN32 src/main.cpp src/launcher.cpp)
+add_executable(MarioPartyDS WIN32 src/main.cpp src/launcher.cpp src/start_screen.cpp src/ui.cpp)
 target_link_libraries(MarioPartyDS PRIVATE runtime game_code runtime SDL3::SDL3)
 target_compile_options(MarioPartyDS PRIVATE /W4 /WX /utf-8)
 target_compile_definitions(MarioPartyDS PRIVATE _CRT_SECURE_NO_WARNINGS
                            _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
 add_custom_command(TARGET MarioPartyDS POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL3::SDL3> $<TARGET_FILE_DIR:MarioPartyDS>)
+# The start screen's picture. It shows the game's characters, so it stays local (native/assets/ is
+# not committed); without it the start screen draws plain stripes.
+set(MENU_BACKGROUND "${CMAKE_CURRENT_SOURCE_DIR}/assets/menu_background.png")
+if(EXISTS "${MENU_BACKGROUND}")
+    add_custom_command(TARGET MarioPartyDS POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MENU_BACKGROUND}" $<TARGET_FILE_DIR:MarioPartyDS>)
+endif()

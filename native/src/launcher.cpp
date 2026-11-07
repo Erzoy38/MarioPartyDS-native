@@ -277,17 +277,12 @@ private:
     bool typing_ = false;
 };
 
-char name_char(char c) { return (c >= 0x20 && c < 0x7F) ? c : 0; }
-char server_char(char c) {
-    return ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == ':' || c == '-')
-               ? c : 0;
-}
 char code_char(char c) {
     if (c >= 'a' && c <= 'z') c = char(c - 'a' + 'A');
     return lobby::valid_code_char(c) ? c : 0;
 }
 
-enum class Screen { Main, Online, Join, Room, Settings };
+enum class Screen { Online, Join, Room };
 
 void panel(SDL_Renderer* r, float y, float h) { box(r, 12, y, kWidth - 24, h, kPanel, kInk); }
 
@@ -361,6 +356,8 @@ AppSettings load_settings(const std::filesystem::path& file) {
         else if (key == "fullscreen") settings.fullscreen = value == "1";
         else if (key == "character") settings.character = std::clamp(std::atoi(value.c_str()), 0, lobby::kCharacters - 1);
         else if (key == "rom") settings.rom = value;
+        else if (key == "language") settings.language = std::clamp(std::atoi(value.c_str()), 1, 5);
+        else if (key == "smooth") settings.smooth = value == "1";
     }
     return settings;
 }
@@ -368,16 +365,20 @@ AppSettings load_settings(const std::filesystem::path& file) {
 void save_settings(const std::filesystem::path& file, const AppSettings& s) {
     std::ofstream out(file, std::ios::trunc);
     out << "name=" << s.name << "\nserver=" << s.server << "\nscale=" << s.scale << "\nfullscreen="
-        << (s.fullscreen ? 1 : 0) << "\ncharacter=" << s.character << "\nrom=" << s.rom << "\n";
+        << (s.fullscreen ? 1 : 0) << "\ncharacter=" << s.character << "\nrom=" << s.rom << "\nlanguage="
+        << s.language << "\nsmooth=" << (s.smooth ? 1 : 0) << "\n";
+}
+
+std::filesystem::path known_servers_file(const std::filesystem::path& settings_file) {
+    return settings_file.parent_path() / "known_servers.txt";
 }
 
 LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSettings& settings,
-                          const std::filesystem::path& settings_file, const std::string& rejoin_room) {
+                          const std::filesystem::path& settings_file) {
     LobbyClient client;
     // Server keys seen before, next to the settings: a server that suddenly has another key is refused.
-    const std::filesystem::path known_servers = settings_file.parent_path() / "known_servers.txt";
-    client.set_known_servers(known_servers.string());
-    Screen screen = Screen::Main;
+    client.set_known_servers(known_servers_file(settings_file).string());
+    Screen screen = Screen::Online;
     int focus = 0;
     std::string message;
     std::string code;
@@ -385,7 +386,6 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
     bool ready = false;
     std::vector<SDL_Gamepad*> pads;
     bool text_input = false;
-    AppSettings edited = settings;
     bool own_server = false;  // the server runs on this PC: connect to it there
     std::uint16_t own_port = lobby::kDefaultPort;
     // Where the lobby is: the server of the settings, or this PC's own.
@@ -486,30 +486,6 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
         Menu menu(renderer, in, focus);
         const float bx = 40, bw = kWidth - 80;
         switch (screen) {
-            case Screen::Main: {
-                top_screen(renderer, "Hauptmenü");
-                if (menu.button(bx, 214, bw, "Lokales Spiel")) {
-                    for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
-                    if (text_input) SDL_StopTextInput(window);
-                    LaunchChoice choice;
-                    choice.kind = LaunchChoice::Kind::Local;
-                    return choice;
-                }
-                if (menu.button(bx, 240, bw, "Online spielen")) { message.clear(); go(Screen::Online); }
-                if (menu.button(bx, 266, bw, "Einstellungen")) { edited = settings; go(Screen::Settings); }
-                if (menu.button(bx, 292, bw, "Beenden") || in.back) return {};
-                if (!rejoin_room.empty()) {
-                    centred(renderer, 162, "Laufende Partie: " + rejoin_room, kInk);
-                    if (menu.button(bx, 322, bw, "Zurück in die Partie")) {
-                        for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
-                        if (text_input) SDL_StopTextInput(window);
-                        LaunchChoice choice;
-                        choice.kind = LaunchChoice::Kind::Rejoin;
-                        return choice;
-                    }
-                }
-                break;
-            }
             case Screen::Online: {
                 top_screen(renderer, "Online spielen");
                 text(renderer, 24, 140, own_server ? "Server: dieser PC :" + std::to_string(own_port)
@@ -544,8 +520,12 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
                 }
                 if (menu.button(bx, 284, bw, "Zurück zum Hauptmenü") || in.back) {
                     client.disconnect();
-                    pending = Pending::None;
-                    go(Screen::Main);
+                    for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
+                    if (text_input) SDL_StopTextInput(window);
+                    save_settings(settings_file, settings);
+                    LaunchChoice choice;
+                    choice.kind = LaunchChoice::Kind::Back;
+                    return choice;
                 }
                 break;
             }
@@ -615,31 +595,6 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
                 if (menu.button(bx, 258, bw, "Raum verlassen") || in.back) {
                     client.leave();
                     message.clear();
-                }
-                break;
-            }
-            case Screen::Settings: {
-                top_screen(renderer, "Einstellungen");
-                menu.field(24, 204, kWidth - 48, "Name", edited.name, size_t(lobby::kMaxName), name_char);
-                menu.field(24, 226, kWidth - 48, "Server", edited.server, 60, server_char);
-                const int scale = menu.selector(24, 248, kWidth - 48, "Fenster", std::to_string(edited.scale) + "x");
-                if (scale != 0) edited.scale = std::clamp(edited.scale + scale, 1, 4);
-                const int full = menu.selector(24, 270, kWidth - 48, "Vollbild", edited.fullscreen ? "an" : "aus");
-                if (full != 0) edited.fullscreen = !edited.fullscreen;
-                if (menu.button(bx, 298, bw, "Speichern", !edited.name.empty() && !edited.server.empty())) {
-                    settings = edited;
-                    save_settings(settings_file, settings);
-                    SDL_SetWindowFullscreen(window, settings.fullscreen);
-                    if (!settings.fullscreen) SDL_SetWindowSize(window, int(kWidth) * settings.scale, int(kHeight) * settings.scale);
-                    go(Screen::Main);
-                }
-                if (menu.button(bx, 322, bw, "Zurück") || in.back) go(Screen::Main);
-                if (menu.button(bx, 346, bw, "Schlüssel vergessen")) {
-                    // Only for a server that really got a new key (asked the host first).
-                    secure::KnownServers(known_servers.string()).forget(edited.server.find(':') == std::string::npos
-                                                                           ? edited.server + ":" + std::to_string(lobby::kDefaultPort)
-                                                                           : edited.server);
-                    message = "Schlüssel vergessen.";
                 }
                 break;
             }

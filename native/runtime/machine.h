@@ -10,6 +10,9 @@ struct MachineSettings {
     std::string player_name = "Player";
     std::vector<u8> save;  // contents of the save memory at start; may be empty
     u16 boot_type = 1;     // 1 = started from the card, 2 = started by download play (a guest)
+    // The firmware's language, which the game takes as its own: 1 English, 2 French, 3 German,
+    // 4 Italian, 5 Spanish (the languages of this release).
+    u8 language = 1;
 };
 
 // Returns an empty string, or what is wrong with this ROM.
