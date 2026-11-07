@@ -39,3 +39,6 @@ native/third_party/
 
 # The package for other players: holds the programs with translated game code.
 dist/
+
+# The public repository (tools/make_public.py), with its own git history.
+/public/

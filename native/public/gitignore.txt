@@ -1,0 +1,5 @@
+build/
+run/
+__pycache__/
+*.key
+known_servers.txt
