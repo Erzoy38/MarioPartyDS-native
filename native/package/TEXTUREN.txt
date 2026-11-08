@@ -1,0 +1,32 @@
+Texturpakete (HD-Texturen)
+==========================
+
+In diesen Ordner kommen Texturpakete. Sie ersetzen die 3D-Texturen des Spiels durch eigene Bilder,
+zum Beispiel in höherer Auflösung. Die 2D-Grafik (Menüs, Texte, Figurenbilder) lässt sich so nicht
+ersetzen.
+
+Ein Paket benutzen
+------------------
+1. Den Ordner des Pakets hierher legen, z. B. textures\MeinPaket\...
+2. Im Startbildschirm: SETTINGS -> MODS -> HD TEXTURES auf "On".
+3. Am besten auch SETTINGS -> VIDEO -> 3D RESOLUTION auf 2x bis 4x stellen, sonst werden die
+   Bilder wieder auf DS-Größe verkleinert.
+
+Ein Paket machen
+----------------
+1. SETTINGS -> MODS -> DUMP TEXTURES auf "On" und spielen. Jede Textur, die das Spiel zeigt,
+   landet einmal als PNG in textures\dump.
+2. Eine Datei nachzeichnen oder verbessern, gern größer, am besten ein Vielfaches (4 x so groß).
+   Durchsichtige Stellen bleiben durchsichtig (PNG mit Alphakanal).
+3. Den Dateinamen behalten (die 16 Zeichen vorne sind der Name der Textur; dahinter darf mehr
+   stehen, z. B. 5385be1a7cda5365_boden.png) und die Datei in einen eigenen Ordner hier legen,
+   nicht in dump.
+4. Das Spiel neu starten.
+
+Gut zu wissen
+-------------
+- Online darf jeder Spieler eigene Pakete und Einstellungen benutzen. Sie ändern nur das Bild,
+  nicht das Spiel.
+- Ändert das Spiel eine Textur (z. B. ihre Farben), bekommt sie einen neuen Namen und braucht ein
+  eigenes Ersatzbild.
+- Texturpakete enthalten Grafik aus dem Spiel. Gib sie nur weiter, wenn du die Rechte daran hast.

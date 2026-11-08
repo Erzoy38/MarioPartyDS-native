@@ -129,10 +129,19 @@ void machine_boot(const std::vector<u8>& rom, const MachineSettings& settings) {
 
 Cpu& machine_cpu() { return g_cpu; }
 
+int g_forced_mode = -1;
+void machine_force_mode(int mode) { g_forced_mode = mode; }
+
 void machine_step() {
     Cpu& c = g_cpu;
     hw_step(c);
     if (g_hw.halted) return;  // time passes until an interrupt wakes the CPU
+    // A test shortcut: the first choice of the next mode after the title (the save select, 0x86).
+    if (g_forced_mode >= 0 && c.pc == 0x0201A3ACu && c.r[0] == 0x86) {
+        std::printf("forcing mode %#x\n", g_forced_mode);
+        c.r[0] = u32(g_forced_mode);
+        g_forced_mode = -1;
+    }
     if (overlay_watch_calls(c)) std::memset(g_block_cache, 0, sizeof g_block_cache);
     if (c.pc == kGameTick) net_tick();
     if (net_hook(c)) return;

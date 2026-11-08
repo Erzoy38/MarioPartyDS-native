@@ -358,6 +358,12 @@ AppSettings load_settings(const std::filesystem::path& file) {
         else if (key == "rom") settings.rom = value;
         else if (key == "language") settings.language = std::clamp(std::atoi(value.c_str()), 1, 5);
         else if (key == "smooth") settings.smooth = value == "1";
+        else if (key == "resolution") settings.resolution = value;
+        else if (key == "layout") settings.layout = std::clamp(std::atoi(value.c_str()), 0, 2);
+        else if (key == "aspect") settings.aspect = std::clamp(std::atoi(value.c_str()), 0, 2);
+        else if (key == "render_scale") settings.render_scale = std::clamp(std::atoi(value.c_str()), 1, 4);
+        else if (key == "hd_textures") settings.hd_textures = value == "1";
+        else if (key == "dump_textures") settings.dump_textures = value == "1";
     }
     return settings;
 }
@@ -366,7 +372,9 @@ void save_settings(const std::filesystem::path& file, const AppSettings& s) {
     std::ofstream out(file, std::ios::trunc);
     out << "name=" << s.name << "\nserver=" << s.server << "\nscale=" << s.scale << "\nfullscreen="
         << (s.fullscreen ? 1 : 0) << "\ncharacter=" << s.character << "\nrom=" << s.rom << "\nlanguage="
-        << s.language << "\nsmooth=" << (s.smooth ? 1 : 0) << "\n";
+        << s.language << "\nsmooth=" << (s.smooth ? 1 : 0) << "\nresolution=" << s.resolution << "\nlayout="
+        << s.layout << "\naspect=" << s.aspect << "\nrender_scale=" << s.render_scale << "\nhd_textures="
+        << (s.hd_textures ? 1 : 0) << "\ndump_textures=" << (s.dump_textures ? 1 : 0) << "\n";
 }
 
 std::filesystem::path known_servers_file(const std::filesystem::path& settings_file) {

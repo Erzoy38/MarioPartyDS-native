@@ -26,6 +26,9 @@ Cpu& machine_cpu();
 // Runs one block, including time passing and interrupts. Stops the program if code is missing.
 void machine_step();
 
+// For tests: the first time the game picks its next mode after the title it goes to `mode`.
+void machine_force_mode(int mode);
+
 // Runs until the next picture is finished.
 void machine_run_frame();
 

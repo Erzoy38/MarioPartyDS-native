@@ -11,7 +11,7 @@
 #   shot=FILE.png  a picture of the window
 #   until=TEXT     waits up to 60 s until the log (next to -ExtraArgs' --settings file) holds TEXT
 param([string]$Steps, [int]$Frames = 1500, [string]$Out = "run\window_input.rgba", [string]$Save = "run\window_input.sav",
-      [int]$Scale = 2, [string]$ExtraArgs = "", [int]$ExitWait = 120, [switch]$NoRom)
+      [int]$Scale = 2, [string]$ExtraArgs = "", [int]$ExitWait = 120, [switch]$NoRom, [string]$Rom = "")
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -36,7 +36,10 @@ public static class Win {
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
 }
 "@
-$rom = (Resolve-Path "Mario Party DS (Europe) (En,Fr,De,Es,It) (Rev 1).nds").Path
+# The ROM: -Rom, else the one in the project folder, else the one the settings name.
+$rom = $Rom
+if (-not $rom -and (Test-Path "Mario Party DS (Europe) (En,Fr,De,Es,It) (Rev 1).nds")) { $rom = (Resolve-Path "Mario Party DS (Europe) (En,Fr,De,Es,It) (Rev 1).nds").Path }
+if (-not $rom) { $line = Get-Content "$env:APPDATA\MarioPartyDS\MarioPartyDS\settings.ini" -ErrorAction SilentlyContinue | Where-Object { $_ -like "rom=*" } | Select-Object -First 1; if ($line) { $rom = $line.Substring(4) } }
 $outFull = Join-Path (Get-Location) $Out
 $saveFull = Join-Path (Get-Location) $Save
 $log = $null

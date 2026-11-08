@@ -21,11 +21,17 @@ FILES = [
     (os.path.join("native", "package", "LIESMICH.txt"), "LIESMICH.txt"),
     ("ONLINE.md", "ONLINE.txt"),
     ("LICENSE", "LIZENZ.txt"),
+    (os.path.join("native", "package", "TEXTUREN.txt"), os.path.join("textures", "LIESMICH.txt")),
     (os.path.join("native", "third_party", "SDL3", "LICENSE.txt"), "SDL3-LICENSE.txt"),
 ]
 FORBIDDEN = (".nds", ".sav", ".dsv", ".key", ".ini", ".log", ".rejoin")
 # Taken when present: the start screen's picture (local only, see native/CMakeLists.txt).
 OPTIONAL = [(os.path.join(BUILD, "menu_background.png"), "menu_background.png")]
+
+
+def packaged():
+    """The files in OUT, relative, folders included."""
+    return sorted(os.path.relpath(os.path.join(root, f), OUT) for root, _, files in os.walk(OUT) for f in files)
 
 
 def main():
@@ -39,6 +45,7 @@ def main():
     os.makedirs(OUT)
     for source, name in FILES:
         target = os.path.join(OUT, name)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
         if name.endswith(".txt"):
             # Notepad reads UTF-8 with Windows line ends best.
             text = open(source, encoding="utf-8").read().replace("\r\n", "\n").replace("\n", "\r\n")
@@ -48,9 +55,9 @@ def main():
             shutil.copy2(source, target)
     archive = os.path.join("dist", "MarioPartyDS.zip")
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
-        for name in sorted(os.listdir(OUT)):
+        for name in packaged():
             z.write(os.path.join(OUT, name), os.path.join("MarioPartyDS", name))
-    for name in sorted(os.listdir(OUT)):
+    for name in packaged():
         path = os.path.join(OUT, name)
         digest = hashlib.sha256(open(path, "rb").read()).hexdigest()[:16]
         print(f"{name:28} {os.path.getsize(path):>11,} bytes  sha256 {digest}")

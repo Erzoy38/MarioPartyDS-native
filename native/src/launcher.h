@@ -18,6 +18,12 @@ struct AppSettings {
     std::string rom;
     int language = 1;     // the game's language: 1 English, 2 French, 3 German, 4 Italian, 5 Spanish
     bool smooth = false;  // the DS screens smoothed when the window is larger, instead of sharp pixels
+    std::string resolution;  // "1920x1080": window size or fullscreen mode; empty: automatic
+    int layout = 0;          // ScreenLayout: stacked, side by side, hybrid
+    int aspect = 0;          // ScreenAspect: 4:3, 16:9, fill the window
+    int render_scale = 1;    // the 3D picture at 1 to 4 times the DS's resolution
+    bool hd_textures = false;    // replacement textures from the texture pack
+    bool dump_textures = false;  // writes the game's textures into textures\dump
 };
 
 AppSettings load_settings(const std::filesystem::path& file);

@@ -17,6 +17,7 @@ MarioPartyDS-server.exe   der Server, nur für den Host einer Online-Partie
 ONLINE.txt                Anleitung für das Spielen über das Internet
 LIZENZ.txt                Urheberrecht und was erlaubt ist
 SDL3-LICENSE.txt          Lizenz von SDL3
+textures\                 Ordner für Texturpakete, mit Anleitung
 
 Weitergeben
 -----------
@@ -31,8 +32,13 @@ Erster Start
    der ROM-Datei und startet dann das Spiel; danach heißt der Punkt „START GAME“.
 3. Windows zeigt bei unbekannten Programmen eventuell „Der Computer wurde durch Windows geschützt“.
    Dann „Weitere Informationen“ und „Trotzdem ausführen“ wählen, wenn das Paket vom Host stammt.
-4. Unter „SETTINGS“: Sprache des Spiels (PRELAUNCH), Fenstergröße und Vollbild (VIDEO), eigener
-   Name und die Server-Adresse, die der Host nennt (ONLINE).
+4. Unter „SETTINGS“:
+   PRELAUNCH  Sprache des Spiels
+   VIDEO      Auflösung (alle Auflösungen des Bildschirms), Vollbild, Anordnung der beiden
+              Bildschirme (übereinander, nebeneinander, Hybrid), Bildformat (4:3, 16:9, Widescreen),
+              3D-Auflösung (1x bis 4x, schärfere 3D-Grafik)
+   MODS       Texturpakete (HD-Texturen), siehe textures\LIESMICH.txt
+   ONLINE     eigener Name und die Server-Adresse, die der Host nennt
 
 Spielstand, Einstellungen und Protokoll liegen unter %APPDATA%\MarioPartyDS\MarioPartyDS\.
 

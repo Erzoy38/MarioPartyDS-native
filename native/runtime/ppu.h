@@ -4,6 +4,8 @@
 
 #include "cpu.h"
 
+#include <vector>
+
 constexpr int kScreenWidth = 256;
 constexpr int kScreenHeight = 192;
 
@@ -12,6 +14,12 @@ void ppu_finish_frame();  // the finished picture becomes the one to show
 
 // RGBA, top screen followed by the bottom screen: 256 x 384 pixels.
 const u8* ppu_frame();
+
+// The last frame for the screen at gpu3d_display_scale() times the size: where the frame shows the
+// 3D picture alone, the pixels come from the screen's own 3D picture (higher resolution, texture
+// pack); everywhere else the game's pixels are made larger. `scale` is set. False if there is no
+// screen picture yet (then `out` is the game's frame made larger).
+bool ppu_compose_display(std::vector<u8>& out, int& scale);
 
 // How many lines used 3D and display capture, so a test can tell what it actually exercised.
 struct PpuGaps {

@@ -11,10 +11,13 @@
 // --local          the local game, without the menu
 // --menu           the menu even with --frames
 // --settings FILE  settings from FILE instead of settings.ini in the program's data folder
+// --force-mode M   for tests: straight from the title into mode M (for example 0x31, a minigame)
 // In the game, Esc asks whether to go back to the main menu.
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#include "display.h"
+#include "gpu3d.h"
 #include "hw.h"
 #include "launcher.h"
 #include "machine.h"
@@ -178,16 +181,20 @@ std::filesystem::path log_path() {
     return path;
 }
 
-void draw_pointer(u8* picture) {
+// The gamepad's pointer, in a picture of (256 x 384) times `s`.
+void draw_pointer(u8* picture, int s) {
     if (!g_pad.pointer_shown) return;
-    const int cx = int(g_pad.pointer_x), cy = int(g_pad.pointer_y) + kScreenHeight;
-    for (int i = -3; i <= 3; ++i) {
-        for (const auto& [x, y] : {std::pair{cx + i, cy}, std::pair{cx, cy + i}}) {
-            if (x < 0 || y < kScreenHeight || x >= kWidth || y >= kHeight) continue;
-            u8* pixel = picture + size_t(y) * kWidth * 4 + size_t(x) * 4;
-            pixel[0] = g_pad.touching ? 255 : 0;
-            pixel[1] = 0;
-            pixel[2] = g_pad.touching ? 0 : 255;
+    const int w = kWidth * s, h = kHeight * s;
+    const int cx = int(g_pad.pointer_x * float(s)), cy = int((g_pad.pointer_y + kScreenHeight) * float(s));
+    for (int i = -3 * s; i <= 3 * s; ++i) {
+        for (int t = 0; t < s; ++t) {
+            for (const auto& [x, y] : {std::pair{cx + i, cy + t}, std::pair{cx + t, cy + i}}) {
+                if (x < 0 || y < kScreenHeight * s || x >= w || y >= h) continue;
+                u8* pixel = picture + (size_t(y) * size_t(w) + size_t(x)) * 4;
+                pixel[0] = g_pad.touching ? 255 : 0;
+                pixel[1] = 0;
+                pixel[2] = g_pad.touching ? 0 : 255;
+            }
         }
     }
 }
@@ -198,6 +205,39 @@ SDL_Renderer* g_renderer = nullptr;
 SDL_Texture* g_texture = nullptr;
 std::string g_rom_path, g_settings_arg;
 bool g_wait_asks_to_leave = false;
+int g_layout = kLayoutStacked, g_aspect = kAspect4x3;
+ScreenRects g_rects{};
+
+// Both screens from the texture (the frame, top screen above the bottom one) where the layout puts
+// them; afterwards drawing is in the DS's 256 x 384 again, for the boxes over the game.
+void draw_screens() {
+    SDL_SetRenderLogicalPresentation(g_renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
+    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(g_renderer);
+    int ow = 0, oh = 0;
+    SDL_GetCurrentRenderOutputSize(g_renderer, &ow, &oh);
+    g_rects = screen_rects(float(ow), float(oh), g_layout, g_aspect);
+    float tw = 0, th = 0;
+    SDL_GetTextureSize(g_texture, &tw, &th);
+    const SDL_FRect top{0, 0, tw, th / 2}, bottom{0, th / 2, tw, th / 2};
+    SDL_RenderTexture(g_renderer, g_texture, &top, &g_rects.top);
+    SDL_RenderTexture(g_renderer, g_texture, &bottom, &g_rects.bottom);
+    SDL_SetRenderLogicalPresentation(g_renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+}
+
+// The mouse on the touch screen, in DS pixels; false when it is elsewhere.
+bool mouse_on_touch_screen(float window_x, float window_y, float& x, float& y) {
+    int ww = 0, wh = 0, ow = 0, oh = 0;
+    SDL_GetWindowSize(g_window, &ww, &wh);
+    SDL_GetCurrentRenderOutputSize(g_renderer, &ow, &oh);
+    if (ww <= 0 || wh <= 0) return false;
+    const float px = window_x * float(ow) / float(ww), py = window_y * float(oh) / float(wh);
+    const SDL_FRect& r = g_rects.bottom;
+    if (r.w <= 0 || r.h <= 0 || px < r.x || py < r.y || px >= r.x + r.w || py >= r.y + r.h) return false;
+    x = (px - r.x) / r.w * float(kScreenWidth);
+    y = (py - r.y) / r.h * float(kScreenHeight);
+    return true;
+}
 
 // Starts this program again with the menu, after the game has ended.
 void restart_with_menu(const std::string& rom_path) {
@@ -249,9 +289,7 @@ void on_network_wait() {
     std::fflush(stdout);
     std::string first, second;
     net_wait_text(first, second);
-    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
-    SDL_RenderClear(g_renderer);
-    SDL_RenderTexture(g_renderer, g_texture, nullptr, nullptr);
+            draw_screens();
     if (g_wait_asks_to_leave) draw_question(g_renderer, "Zurück zum Hauptmenü?", "Enter: ja    Esc: nein");
     else draw_message(g_renderer, first.empty() ? "Warte auf die anderen Spieler ..." : first, second);
     SDL_RenderPresent(g_renderer);
@@ -274,9 +312,7 @@ void on_network_end(const std::string& text) {
             }
         }
         if (done) break;
-        SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
-        SDL_RenderClear(g_renderer);
-        SDL_RenderTexture(g_renderer, g_texture, nullptr, nullptr);
+                        draw_screens();
         draw_message(g_renderer, text, "Weiter mit einer Taste");
         SDL_RenderPresent(g_renderer);
         SDL_Delay(30);
@@ -304,6 +340,7 @@ int main(int argc, char** argv) {
         else if (arg == "--save" && i + 1 < argc) save_arg = argv[++i];
         else if (arg == "--screenshot" && i + 1 < argc) screenshot = argv[++i];
         else if (arg == "--settings" && i + 1 < argc) settings_arg = argv[++i];
+        else if (arg == "--force-mode" && i + 1 < argc) machine_force_mode(int(std::strtol(argv[++i], nullptr, 0)));
         else if (arg.rfind("--", 0) != 0) rom_path = arg;
     }
 
@@ -337,12 +374,18 @@ int main(int argc, char** argv) {
             SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         }
     };
-    const auto game_layout = [&] {
+    // The online menu is drawn in the DS's 256 x 384.
+    const auto menu_layout = [&] {
         SDL_SetRenderLogicalPresentation(renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
         if (in_window()) {
             SDL_SetWindowSize(window, kWidth * scale, kHeight * scale);
             SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         }
+    };
+    // The game: resolution, layout and shape from the settings.
+    const auto game_layout = [&] {
+        SDL_SetRenderLogicalPresentation(renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+        apply_window_mode(window, app, scale, fullscreen);
     };
     SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
                                              SDL_TEXTUREACCESS_STREAMING, kWidth, kHeight);
@@ -420,7 +463,7 @@ int main(int argc, char** argv) {
             break;
         }
         if (!scale_given) scale = app.scale;
-        game_layout();
+        menu_layout();
         LaunchChoice choice = run_launcher(window, renderer, app, settings_file);
         if (choice.kind == LaunchChoice::Kind::Quit) {
             SDL_Quit();
@@ -456,12 +499,24 @@ int main(int argc, char** argv) {
     if (use_menu) {
         // The settings may have changed on the start screen.
         if (!scale_given) scale = app.scale;
-        fullscreen = !in_window();
+        fullscreen = app.fullscreen;
         game_layout();
         if (app.rom != rom_path) {  // a ROM given on the command line is remembered too
             app.rom = rom_path;
             save_settings(settings_file, app);
         }
+    }
+    if (!use_menu) game_layout();
+    g_layout = app.layout;
+    g_aspect = app.aspect;
+    // The picture for the screen: the 3D at a higher resolution and texture packs, only for showing.
+    texture_pack_start(app.render_scale, app.hd_textures, app.dump_textures);
+    const bool display_picture = app.render_scale > 1 || app.hd_textures;
+    const int shown_scale = display_picture ? app.render_scale : 1;
+    if (shown_scale != 1) {
+        SDL_DestroyTexture(texture);
+        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, kWidth * shown_scale,
+                                    kHeight * shown_scale);
     }
     SDL_SetTextureScaleMode(texture, app.smooth ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
     settings.player_name = app.name;
@@ -476,6 +531,7 @@ int main(int argc, char** argv) {
     g_renderer = renderer;
     g_texture = texture;
     g_rom_path = rom_path;
+    SDL_SetRenderLogicalPresentation(renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
     g_settings_arg = settings_arg;
     const bool online = net.role != NetRole::Off;
     net_set_wait_callback(on_network_wait);
@@ -503,6 +559,7 @@ int main(int argc, char** argv) {
     int frames_since_change = -1;
     bool running = true;
     std::vector<u8> picture(size_t(kWidth) * kHeight * 4);
+    std::vector<u8> shown;  // the screen's picture, with display_picture
 
     while (running && frame_limit != frames) {
         SDL_Event event;
@@ -511,10 +568,11 @@ int main(int argc, char** argv) {
             if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
                 if (event.key.scancode == SDL_SCANCODE_F11) {
                     fullscreen = !fullscreen;
-                    SDL_SetWindowFullscreen(window, fullscreen);
+                    apply_window_mode(window, app, scale, fullscreen);
                 } else if (event.key.scancode == SDL_SCANCODE_F10 && !fullscreen) {
-                    scale = scale % 4 + 1;
-                    SDL_SetWindowSize(window, kWidth * scale, kHeight * scale);
+                    scale = scale % 4 + 1;  // automatic sizes, for this game only
+                    app.resolution.clear();
+                    apply_window_mode(window, app, scale, false);
                 } else if (event.key.scancode == SDL_SCANCODE_ESCAPE) {
                     asking_to_leave = !asking_to_leave;
                 } else if (asking_to_leave && (event.key.scancode == SDL_SCANCODE_RETURN
@@ -537,10 +595,8 @@ int main(int argc, char** argv) {
 
         float mouse_x = 0, mouse_y = 0;
         const SDL_MouseButtonFlags buttons = SDL_GetMouseState(&mouse_x, &mouse_y);
-        float logical_x = 0, logical_y = 0;
-        SDL_RenderCoordinatesFromWindow(renderer, mouse_x, mouse_y, &logical_x, &logical_y);
-        const bool mouse_touch = (buttons & SDL_BUTTON_LMASK) && logical_x >= 0 && logical_x < kWidth
-                                 && logical_y >= kScreenHeight && logical_y < kHeight;
+        float touch_x = 0, touch_y = 0;
+        const bool mouse_touch = (buttons & SDL_BUTTON_LMASK) && mouse_on_touch_screen(mouse_x, mouse_y, touch_x, touch_y);
         hw_set_keys(keyboard_keys() | pad_keys());
         // Blowing into the microphone: a key, or the left trigger.
         hw_set_mic(SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_SPACE]
@@ -548,7 +604,7 @@ int main(int argc, char** argv) {
                        && SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000));
         u32 auto_x = 0, auto_y = 0;
         if (net_auto_touch(auto_x, auto_y)) hw_set_touch(true, auto_x, auto_y);  // the lobby's character
-        else if (mouse_touch) hw_set_touch(true, u32(logical_x), u32(logical_y) - kScreenHeight);
+        else if (mouse_touch) hw_set_touch(true, u32(touch_x), u32(touch_y));
         else if (g_pad.touching) hw_set_touch(true, u32(g_pad.pointer_x), u32(g_pad.pointer_y));
         else hw_set_touch(false, 0, 0);
         if (asking_to_leave) {  // the question takes the keys; the game goes on (others may be playing)
@@ -593,12 +649,19 @@ int main(int argc, char** argv) {
             frames_since_change = -1;
         }
 
-        std::memcpy(picture.data(), ppu_frame(), picture.size());
-        draw_pointer(picture.data());
-        SDL_UpdateTexture(texture, nullptr, picture.data(), kWidth * 4);
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-        SDL_RenderClear(renderer);
-        SDL_RenderTexture(renderer, texture, nullptr, nullptr);
+        if (display_picture) {
+            int s = 1;
+            ppu_compose_display(shown, s);
+            if (s == shown_scale) {
+                draw_pointer(shown.data(), s);
+                SDL_UpdateTexture(texture, nullptr, shown.data(), kWidth * s * 4);
+            }
+        } else {
+            std::memcpy(picture.data(), ppu_frame(), picture.size());
+            draw_pointer(picture.data(), 1);
+            SDL_UpdateTexture(texture, nullptr, picture.data(), kWidth * 4);
+        }
+        draw_screens();
         if (asking_to_leave) draw_question(renderer, "Zurück zum Hauptmenü?", "Enter: ja    Esc: nein");
         SDL_RenderPresent(renderer);
 

@@ -1,5 +1,6 @@
 #include "start_screen.h"
 
+#include "display.h"
 #include "ui.h"
 
 #include <algorithm>
@@ -443,16 +444,56 @@ private:
             };
             rows.push_back(language);
         } else if (tab == 1) {
-            const int s = settings_.scale;
-            Row size{"WINDOW SIZE", std::to_string(s) + "x  (" + std::to_string(256 * s) + " x " + std::to_string(384 * s) + ")",
-                     "The size of the game window: the two DS screens, 256 x 384 pixels, made larger. F10 changes it "
-                     "while playing."};
+            // Automatic first, then every resolution of the display.
+            std::vector<std::string> sizes{""};
+            for (const auto& [w, h] : display_resolutions()) sizes.push_back(std::to_string(w) + "x" + std::to_string(h));
+            int aw = 0, ah = 0;
+            automatic_window_size(settings_.layout, settings_.aspect, settings_.scale, aw, ah);
+            const std::string automatic = "Auto (" + std::to_string(aw) + " x " + std::to_string(ah) + ")";
+            int rw = 0, rh = 0;
+            const std::string shown = parse_resolution(settings_.resolution, rw, rh)
+                                          ? std::to_string(rw) + " x " + std::to_string(rh) : automatic;
+            Row size{"RESOLUTION", shown,
+                     "The size of the game window, or of the screen in fullscreen. All resolutions of your display "
+                     "are listed. Auto makes the window fit the DS screens."};
             size.kind = Row::Kind::Choice;
-            size.change = [this](int delta) {
-                settings_.scale = (settings_.scale - 1 + (delta == 0 ? 1 : delta) + 4) % 4 + 1;
+            size.change = [this, sizes](int delta) {
+                auto at = std::find(sizes.begin(), sizes.end(), settings_.resolution);
+                const int n = int(sizes.size());
+                const int i = at == sizes.end() ? 0 : int(at - sizes.begin());
+                settings_.resolution = sizes[size_t((i + (delta == 0 ? 1 : delta) + n) % n)];
                 save();
             };
             rows.push_back(size);
+            Row layout{"SCREEN LAYOUT", layout_name(settings_.layout),
+                       "Where the two DS screens go: one above the other as on the DS, side by side, or hybrid: "
+                       "the top screen large with the touch screen small beside it, good for wide monitors."};
+            layout.kind = Row::Kind::Choice;
+            layout.change = [this](int delta) {
+                settings_.layout = (settings_.layout + (delta == 0 ? 1 : delta) + kLayoutCount) % kLayoutCount;
+                save();
+            };
+            rows.push_back(layout);
+            Row aspect{"ASPECT RATIO", aspect_name(settings_.aspect),
+                       "The shape of each screen. 4:3 is the DS's own. 16:9 stretches each screen wider. Widescreen "
+                       "fills the whole window or monitor. The game itself does not show more of its world."};
+            aspect.kind = Row::Kind::Choice;
+            aspect.change = [this](int delta) {
+                settings_.aspect = (settings_.aspect + (delta == 0 ? 1 : delta) + kAspectCount) % kAspectCount;
+                save();
+            };
+            rows.push_back(aspect);
+            const int r = settings_.render_scale;
+            Row render{"3D RESOLUTION",
+                       std::to_string(r) + "x  (" + std::to_string(256 * r) + " x " + std::to_string(192 * r) + ")",
+                       "The 3D graphics drawn sharper: 2x to 4x the DS's resolution. Needs more computing power. "
+                       "2D pictures (menus, text) stay as on the DS. Online, every player may choose their own."};
+            render.kind = Row::Kind::Choice;
+            render.change = [this](int delta) {
+                settings_.render_scale = (settings_.render_scale - 1 + (delta == 0 ? 1 : delta) + 4) % 4 + 1;
+                save();
+            };
+            rows.push_back(render);
             Row full{"FULLSCREEN", settings_.fullscreen ? "On" : "Off", "The whole screen instead of a window. F11 switches it at any time."};
             full.kind = Row::Kind::Choice;
             full.change = [this](int) {
@@ -469,6 +510,32 @@ private:
                 save();
             };
             rows.push_back(smooth);
+        } else if (tab == 2) {
+            Row hd{"HD TEXTURES", settings_.hd_textures ? "On" : "Off",
+                   "Texture mods: the game's 3D textures replaced by pictures from the folder \"textures\" next to "
+                   "the game, for example HD textures. A pack goes into its own folder there. Best together with "
+                   "a higher 3D resolution."};
+            hd.kind = Row::Kind::Choice;
+            hd.change = [this](int) {
+                settings_.hd_textures = !settings_.hd_textures;
+                save();
+            };
+            rows.push_back(hd);
+            Row dump{"DUMP TEXTURES", settings_.dump_textures ? "On" : "Off",
+                     "For making a pack: every texture the game shows is saved once to textures\\dump as a PNG. "
+                     "Draw a better version (for example 4 times as large), keep the file name, and put it into "
+                     "a folder of your pack."};
+            dump.kind = Row::Kind::Choice;
+            dump.change = [this](int) {
+                settings_.dump_textures = !settings_.dump_textures;
+                save();
+            };
+            rows.push_back(dump);
+            Row folder{"OPEN TEXTURE FOLDER", "", "Opens the folder \"textures\" in Explorer; it is made if missing."};
+            folder.change = [](int delta) {
+                if (delta == 0) open_texture_folder();
+            };
+            rows.push_back(folder);
         } else {
             Row name{"PLAYER NAME", settings_.name, "Your name in the game and in online rooms, up to 10 letters."};
             name.kind = Row::Kind::Field;
@@ -521,8 +588,8 @@ private:
     }
 
     void draw_settings(const Input& in) {
-        static const char* const kTabs[] = {"PRELAUNCH", "VIDEO", "ONLINE"};
-        constexpr int kTabCount = 3;
+        static const char* const kTabs[] = {"PRELAUNCH", "VIDEO", "MODS", "ONLINE"};
+        constexpr int kTabCount = 4;
         const SDL_FRect panel{78, 60, 868, 458};
         ui::fill_rounded(r_, panel, 12, kPanel);
         ui::outline_rounded(r_, panel, 12, kPanelEdge);

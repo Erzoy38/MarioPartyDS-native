@@ -10,6 +10,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <memory>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -368,15 +372,69 @@ void add_vertex() {
 
 // --- Rasterizer ---
 
-struct Pixel {
-    float depth[kHeight][kWidth];
-    u32 color[kHeight][kWidth];   // 6 bits per channel in 0-17, alpha in 18-22
-    u8 id[kHeight][kWidth];       // polygon id of the opaque pixel
-    s16 translucent_id[kHeight][kWidth];
-    bool fog[kHeight][kWidth];
-    bool stencil[kHeight][kWidth];
+
+// Runs body(first, last) over [0, count) in bands, on all cores; the bands never overlap.
+template <typename Body>
+void parallel_rows(int count, Body body) {
+    static const int kThreads = std::max(1, std::min(16, int(std::thread::hardware_concurrency())));
+    if (count < 64 || kThreads == 1) {
+        body(0, count);
+        return;
+    }
+    std::vector<std::thread> threads;
+    const int step = (count + kThreads - 1) / kThreads;
+    for (int first = step; first < count; first += step) threads.emplace_back(body, first, std::min(count, first + step));
+    body(0, std::min(count, step));
+    for (std::thread& t : threads) t.join();
+}
+
+// A picture being drawn: the game's own at 256 x 192, or the one for the screen at `scale` times
+// that. Index y * w + x.
+struct Target {
+    int scale = 1, w = kWidth, h = kHeight;
+    std::vector<float> depth;
+    std::vector<u32> color;  // 6 bits per channel in 0-17, alpha in 18-22
+    std::vector<u8> id;      // polygon id of the opaque pixel
+    std::vector<s16> translucent_id;
+    std::vector<u8> fog;
+    std::vector<u8> stencil;
+
+    void resize(int s) {
+        scale = s;
+        w = kWidth * s;
+        h = kHeight * s;
+        const size_t n = size_t(w) * size_t(h);
+        depth.assign(n, 0);
+        color.assign(n, 0);
+        id.assign(n, 0);
+        translucent_id.assign(n, -1);
+        fog.assign(n, 0);
+        stencil.assign(n, 0);
+    }
 };
-Pixel* g_pixels = new Pixel;
+Target g_native = [] {
+    Target t;
+    t.resize(1);
+    return t;
+}();
+
+// A texture pack's picture for one of the game's textures, in RGBA (r in the low byte).
+struct Replacement {
+    int w = 0, h = 0;
+    float kx = 1, ky = 1;  // replacement texels per game texel
+    std::vector<u32> rgba;
+};
+
+// --- The picture for the screen: higher resolution, replacement textures ---
+int g_display_scale = 1;
+bool g_display_replace = false, g_display_dump = false;
+Gpu3dTextureHooks g_hooks{};
+Target g_display;
+std::vector<u32> g_display_picture[2];
+int g_display_index = 0;
+bool g_display_drawn = false;
+std::unordered_map<u64, std::shared_ptr<Replacement>> g_replacements;  // null: no file for it
+std::unordered_set<u64> g_dumped;
 
 u16 io16_at(u32 offset) {
     u16 value;
@@ -420,8 +478,10 @@ u32 average(u16 a, u16 b, u32 weight_a, u32 weight_b) {
     return out;
 }
 
-TexelRead sample(const Polygon& p, s32 s, s32 t) {
-    const u32 param = p.tex_param;
+TexelRead sample_texture(u32 param, u32 pal_base, s32 s, s32 t);
+TexelRead sample(const Polygon& p, s32 s, s32 t) { return sample_texture(p.tex_param, p.pal_base, s, t); }
+
+TexelRead sample_texture(u32 param, u32 pal_base, s32 s, s32 t) {
     const u32 format = (param >> 26) & 7;
     const s32 width = 8 << ((param >> 20) & 7), height = 8 << ((param >> 23) & 7);
     const auto wrap = [](s32 v, s32 size, bool repeat, bool flip) {
@@ -437,7 +497,7 @@ TexelRead sample(const Polygon& p, s32 s, s32 t) {
     const u32 y = u32(wrap(t, height, param & (1u << 17), param & (1u << 19)));
     const u32 base = (param & 0xFFFF) * 8;
     const bool transparent0 = param & (1u << 29);
-    const u32 pal = p.pal_base * 16;
+    const u32 pal = pal_base * 16;
     switch (format) {
         case 1: {  // A3I5
             const u8 v = tex8(base + y * u32(width) + x);
@@ -448,7 +508,7 @@ TexelRead sample(const Polygon& p, s32 s, s32 t) {
             const u8 byte = tex8(base + (y * u32(width) + x) / 4);
             const u32 i = (byte >> (((y * u32(width) + x) & 3) * 2)) & 3;
             if (i == 0 && transparent0) return {0, 0};
-            return {pal16(p.pal_base * 8 + i * 2) & 0x7FFFu, 31};
+            return {pal16(pal_base * 8 + i * 2) & 0x7FFFu, 31};
         }
         case 3: {  // 16 colours
             const u32 where = y * u32(width) + x;
@@ -519,7 +579,7 @@ u32 mix18(u32 src, u32 dst, u32 alpha) {
 
 // One polygon's colour at a pixel, from the interpolated vertex colour and the texture.
 void shade(const Polygon& p, float r, float g, float b, float s, float t, u32 poly_alpha, u32 disp,
-           u32& out_color, u32& out_alpha) {
+           const Replacement* replacement, u32& out_color, u32& out_alpha) {
     // Vertex colours in 6 bits.
     u32 vr = u32(std::clamp(r * 2.0f + 1.0f, 0.0f, 63.0f));
     u32 vg = u32(std::clamp(g * 2.0f + 1.0f, 0.0f, 63.0f));
@@ -544,9 +604,35 @@ void shade(const Polygon& p, float r, float g, float b, float s, float t, u32 po
     const u32 format = (p.tex_param >> 26) & 7;
     u32 alpha = poly_alpha == 0 ? 31 : poly_alpha;
     if (format != 0 && (disp & 1)) {
-        const TexelRead texel = sample(p, s32(std::floor(s)), s32(std::floor(t)));
-        const u32 tr = expand6(texel.color & 31), tg = expand6((texel.color >> 5) & 31);
-        const u32 tb = expand6((texel.color >> 10) & 31);
+        TexelRead texel;
+        u32 tr, tg, tb;
+        if (replacement != nullptr) {
+            // The replacement's texel at the same place, with the game's wrapping rules.
+            const u32 param = p.tex_param;
+            const auto wrap = [](s32 v, s32 size, bool repeat, bool flip) {
+                if (!repeat) return std::clamp(v, 0, size - 1);
+                if (flip) {
+                    const s32 period = size * 2;
+                    s32 m = v % period;
+                    if (m < 0) m += period;
+                    return m >= size ? period - 1 - m : m;
+                }
+                s32 m = v % size;
+                return m < 0 ? m + size : m;
+            };
+            const s32 x = wrap(s32(std::floor(s * replacement->kx)), replacement->w, param & (1u << 16), param & (1u << 18));
+            const s32 y = wrap(s32(std::floor(t * replacement->ky)), replacement->h, param & (1u << 17), param & (1u << 19));
+            const u32 c = replacement->rgba[size_t(y) * size_t(replacement->w) + size_t(x)];
+            tr = (c & 0xFF) >> 2;
+            tg = ((c >> 8) & 0xFF) >> 2;
+            tb = ((c >> 16) & 0xFF) >> 2;
+            texel = {0, (c >> 24) >> 3};
+        } else {
+            texel = sample(p, s32(std::floor(s)), s32(std::floor(t)));
+            tr = expand6(texel.color & 31);
+            tg = expand6((texel.color >> 5) & 31);
+            tb = expand6((texel.color >> 10) & 31);
+        }
         if (mode == 1) {  // decal
             vr = (tr * texel.alpha + vr * (31 - texel.alpha)) >> 5;
             vg = (tg * texel.alpha + vg * (31 - texel.alpha)) >> 5;
@@ -567,15 +653,24 @@ void shade(const Polygon& p, float r, float g, float b, float s, float t, u32 po
     out_alpha = alpha;
 }
 
-void draw_triangle(const Polygon& p, const Vertex& a, const Vertex& b, const Vertex& c, u32 disp,
-                   bool w_mode) {
+void draw_triangle(const Polygon& p, Vertex a, Vertex b, Vertex c, u32 disp, bool w_mode, Target& target,
+                   const Replacement* replacement, int row_first, int row_last) {
+    if (target.scale != 1) {
+        const float k = float(target.scale);
+        // Pixel centres stay where the game's picture has them: pixel x of the game is pixel x * k.
+        for (Vertex* v : {&a, &b, &c}) {
+            v->x *= k;
+            v->y *= k;
+        }
+    }
+    const int tw = target.w, th = target.h;
     const float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
     if (area == 0) return;
     const float inv_area = 1.0f / area;
     const int x_start = std::max(0, int(std::floor(std::min({a.x, b.x, c.x}))));
-    const int x_end = std::min(kWidth - 1, int(std::ceil(std::max({a.x, b.x, c.x}))));
-    const int y_start = std::max(0, int(std::floor(std::min({a.y, b.y, c.y}))));
-    const int y_end = std::min(kHeight - 1, int(std::ceil(std::max({a.y, b.y, c.y}))));
+    const int x_end = std::min(tw - 1, int(std::ceil(std::max({a.x, b.x, c.x}))));
+    const int y_start = std::max(row_first, int(std::floor(std::min({a.y, b.y, c.y}))));
+    const int y_end = std::min({th - 1, row_last - 1, int(std::ceil(std::max({a.y, b.y, c.y})))});
 
     const u32 poly_alpha = (p.attr >> 16) & 31;
     const u32 id = (p.attr >> 24) & 63;
@@ -605,6 +700,7 @@ void draw_triangle(const Polygon& p, const Vertex& a, const Vertex& b, const Ver
         const float py = float(y);
         for (int x = x_start; x <= x_end; ++x) {
             const float px = float(x);
+            const size_t at = size_t(y) * size_t(tw) + size_t(x);
             const float e0 = ((c.x - b.x) * (py - b.y) - (c.y - b.y) * (px - b.x)) * sign;
             const float e1 = ((a.x - c.x) * (py - c.y) - (a.y - c.y) * (px - c.x)) * sign;
             const float e2 = ((b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x)) * sign;
@@ -617,19 +713,19 @@ void draw_triangle(const Polygon& p, const Vertex& a, const Vertex& b, const Ver
             const float screen_z = l0 * a.z + l1 * b.z + l2 * c.z;
             const float depth = w_mode ? std::min(w / 4096.0f, 4095.0f) / 4095.0f : screen_z;
 
-            float& buffered = g_pixels->depth[y][x];
+            float& buffered = target.depth[at];
             const bool depth_pass = depth_equal ? std::fabs(depth - buffered) <= 0.0002f : depth < buffered;
 
             if (shadow && id == 0) {
                 // A shadow mask marks where the volume is hidden behind the scene.
-                if (!depth_pass) g_pixels->stencil[y][x] = true;
+                if (!depth_pass) target.stencil[at] = true;
                 continue;
             }
             if (!depth_pass) continue;
             if (shadow) {
-                const bool marked = g_pixels->stencil[y][x];
-                g_pixels->stencil[y][x] = false;
-                if (!marked || g_pixels->id[y][x] == id) continue;
+                const bool marked = target.stencil[at];
+                target.stencil[at] = false;
+                if (!marked || target.id[at] == id) continue;
             }
 
             const float pr = (l0 * a.r * wa + l1 * b.r * wb + l2 * c.r * wc) * w;
@@ -638,48 +734,57 @@ void draw_triangle(const Polygon& p, const Vertex& a, const Vertex& b, const Ver
             const float ps = (l0 * a.s * wa + l1 * b.s * wb + l2 * c.s * wc) * w;
             const float pt = (l0 * a.t * wa + l1 * b.t * wb + l2 * c.t * wc) * w;
             u32 color, alpha;
-            shade(p, pr, pg, pb, ps, pt, poly_alpha, disp, color, alpha);
+            shade(p, pr, pg, pb, ps, pt, poly_alpha, disp, replacement, color, alpha);
             if (alpha == 0) continue;
             if (alpha_test && alpha <= alpha_ref) continue;
 
             if (alpha == 31) {
-                g_pixels->color[y][x] = color | (31u << 18);
+                target.color[at] = color | (31u << 18);
                 buffered = depth;
-                g_pixels->id[y][x] = u8(id);
-                g_pixels->fog[y][x] = fog;
+                target.id[at] = u8(id);
+                target.fog[at] = fog;
             } else {
-                if (g_pixels->translucent_id[y][x] == s16(id)) continue;  // same id does not overlap
-                g_pixels->translucent_id[y][x] = s16(id);
-                const u32 under = g_pixels->color[y][x];
+                if (target.translucent_id[at] == s16(id)) continue;  // same id does not overlap
+                target.translucent_id[at] = s16(id);
+                const u32 under = target.color[at];
                 const u32 under_alpha = (under >> 18) & 31;
                 if (blend && under_alpha != 0) {
-                    g_pixels->color[y][x] = mix18(color, under & 0x3FFFF, alpha) | (std::max(alpha, under_alpha) << 18);
+                    target.color[at] = mix18(color, under & 0x3FFFF, alpha) | (std::max(alpha, under_alpha) << 18);
                 } else {
-                    g_pixels->color[y][x] = color | (alpha << 18);
+                    target.color[at] = color | (alpha << 18);
                 }
                 if (update_depth_translucent) buffered = depth;
-                g_pixels->fog[y][x] = g_pixels->fog[y][x] && fog;
+                target.fog[at] = target.fog[at] && fog;
             }
         }
     }
 }
 
-void apply_edges_and_fog(u32 disp) {
+void apply_edges_and_fog(u32 disp, Target& t, bool parallel) {
+    const int w = t.w, h = t.h;
     if (disp & 0x20) {  // edge marking: outlines between different polygon ids
-        for (int y = 0; y < kHeight; ++y) {
-            for (int x = 0; x < kWidth; ++x) {
-                const u8 id = g_pixels->id[y][x];
-                const float depth = g_pixels->depth[y][x];
+        std::vector<u32> marked = t.color;
+        const auto rows = [&](int first, int last) {
+        for (int y = first; y < last; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const size_t at = size_t(y) * size_t(w) + size_t(x);
+                const u8 id = t.id[at];
+                const float depth = t.depth[at];
                 const auto differs = [&](int nx, int ny) {
-                    if (nx < 0 || ny < 0 || nx >= kWidth || ny >= kHeight) return false;
-                    return g_pixels->id[ny][nx] != id && depth < g_pixels->depth[ny][nx];
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) return false;
+                    const size_t n = size_t(ny) * size_t(w) + size_t(nx);
+                    return t.id[n] != id && depth < t.depth[n];
                 };
                 if (differs(x - 1, y) || differs(x + 1, y) || differs(x, y - 1) || differs(x, y + 1)) {
-                    const u32 alpha = (g_pixels->color[y][x] >> 18) & 31;
-                    g_pixels->color[y][x] = color15_to_18(io16_at(0x330 + (id >> 3) * 2) & 0x7FFF) | (alpha << 18);
+                    const u32 alpha = (t.color[at] >> 18) & 31;
+                    marked[at] = color15_to_18(io16_at(0x330 + (id >> 3) * 2) & 0x7FFF) | (alpha << 18);
                 }
             }
         }
+        };
+        if (parallel) parallel_rows(h, rows);
+        else rows(0, h);
+        t.color.swap(marked);
     }
     if (disp & 0x80) {  // fog from a table over the depth range
         const u32 fog_raw = io32_at(0x358);
@@ -688,59 +793,121 @@ void apply_edges_and_fog(u32 disp) {
         const u32 offset = io16_at(0x35C) & 0x7FFF;
         const u32 shift = (disp >> 8) & 15;
         const bool alpha_only = disp & 0x40;
-        for (int y = 0; y < kHeight; ++y) {
-            for (int x = 0; x < kWidth; ++x) {
-                if (!g_pixels->fog[y][x]) continue;
-                const u32 depth15 = u32(std::clamp(g_pixels->depth[y][x], 0.0f, 1.0f) * 32767.0f);
-                u32 density;
-                if (depth15 < offset) {
-                    density = g_machine.io[0x360] & 127;
-                } else {
-                    const u32 step = 0x400u >> shift;
-                    const u32 index = step ? (depth15 - offset) / step : 31;
-                    density = index >= 31 ? g_machine.io[0x360 + 31] & 127 : g_machine.io[0x360 + index] & 127;
-                }
-                if (density >= 127) density = 128;
-                const u32 pixel = g_pixels->color[y][x];
-                u32 out = 0;
-                for (int s = 0; s < 18; s += 6) {
-                    const u32 c = (pixel >> s) & 63, f = (fog_color >> s) & 63;
-                    out |= alpha_only ? (c << s) : (((f * density + c * (128 - density)) >> 7) << s);
-                }
-                const u32 alpha = (pixel >> 18) & 31;
-                const u32 new_alpha = (fog_alpha_value * density + alpha * (128 - density)) >> 7;
-                g_pixels->color[y][x] = out | (new_alpha << 18);
+        const auto rows = [&](int first, int last) {
+        for (size_t at = size_t(first) * size_t(w); at < size_t(last) * size_t(w); ++at) {
+            if (!t.fog[at]) continue;
+            const u32 depth15 = u32(std::clamp(t.depth[at], 0.0f, 1.0f) * 32767.0f);
+            u32 density;
+            if (depth15 < offset) {
+                density = g_machine.io[0x360] & 127;
+            } else {
+                const u32 step = 0x400u >> shift;
+                const u32 index = step ? (depth15 - offset) / step : 31;
+                density = index >= 31 ? g_machine.io[0x360 + 31] & 127 : g_machine.io[0x360 + index] & 127;
             }
+            if (density >= 127) density = 128;
+            const u32 pixel = t.color[at];
+            u32 out = 0;
+            for (int s = 0; s < 18; s += 6) {
+                const u32 c = (pixel >> s) & 63, f = (fog_color >> s) & 63;
+                out |= alpha_only ? (c << s) : (((f * density + c * (128 - density)) >> 7) << s);
+            }
+            const u32 alpha = (pixel >> 18) & 31;
+            const u32 new_alpha = (fog_alpha_value * density + alpha * (128 - density)) >> 7;
+            t.color[at] = out | (new_alpha << 18);
+        }
+        };
+        if (parallel) parallel_rows(h, rows);
+        else rows(0, h);
+    }
+}
+
+// FNV-1a over the decoded texture: the same picture always gets the same name.
+u64 texture_key(int w, int h, const std::vector<u32>& rgba) {
+    u64 hash = 0xCBF29CE484222325ull;
+    const auto add = [&](u32 v) {
+        for (int i = 0; i < 4; ++i) {
+            hash ^= (v >> (i * 8)) & 0xFF;
+            hash *= 0x100000001B3ull;
+        }
+    };
+    add(u32(w));
+    add(u32(h));
+    for (u32 v : rgba) add(v);
+    return hash;
+}
+
+// The texture of these fields as RGBA, the way the game shows it.
+void decode_texture(u32 param, u32 pal_base, int w, int h, std::vector<u32>& rgba) {
+    rgba.resize(size_t(w) * size_t(h));
+    const u32 plain = param & ~((15u << 16) | (3u << 30));  // without wrapping and coordinate modes
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const TexelRead t = sample_texture(plain, pal_base, x, y);
+            const u32 r = expand6(t.color & 31) << 2, g = expand6((t.color >> 5) & 31) << 2;
+            const u32 b = expand6((t.color >> 10) & 31) << 2;
+            const u32 a = t.alpha * 255 / 31;
+            rgba[size_t(y) * size_t(w) + size_t(x)] = (r | (r >> 6)) | ((g | (g >> 6)) << 8) | ((b | (b >> 6)) << 16) | (a << 24);
         }
     }
 }
 
-void draw_list() {
-    u32 disp = io16_at(0x60);
-    static const bool no_textures = std::getenv("MPDS_NO_TEXTURES") != nullptr;
-    if (no_textures) disp &= ~1u;
-    const bool w_mode = g_swap_param & 2;
-    const bool manual_sort = g_swap_param & 1;
+// For each texture of the list: its replacement (or none), and the dump of new ones.
+std::unordered_map<u64, const Replacement*> prepare_textures(u32 disp) {
+    std::unordered_map<u64, const Replacement*> found;
+    if (!(disp & 1) || (!g_display_replace && !g_display_dump)) return found;
+    std::vector<u32> rgba;
+    for (const Polygon& p : g_ready) {
+        const u32 format = (p.tex_param >> 26) & 7;
+        if (format == 0) continue;
+        const u64 fields = (u64(p.tex_param & ~((15u << 16) | (3u << 30))) << 32) | p.pal_base;
+        if (found.count(fields)) continue;
+        const int w = 8 << ((p.tex_param >> 20) & 7), h = 8 << ((p.tex_param >> 23) & 7);
+        decode_texture(p.tex_param, p.pal_base, w, h, rgba);
+        const u64 key = texture_key(w, h, rgba);
+        if (g_display_dump && g_hooks.dump != nullptr && g_dumped.insert(key).second) g_hooks.dump(key, w, h, rgba);
+        const Replacement* replacement = nullptr;
+        if (g_display_replace && g_hooks.load != nullptr) {
+            auto cached = g_replacements.find(key);
+            if (cached == g_replacements.end()) {
+                std::shared_ptr<Replacement> loaded;
+                int rw = 0, rh = 0;
+                std::vector<u32> pixels;
+                if (g_hooks.load(key, rw, rh, pixels) && rw > 0 && rh > 0 && pixels.size() == size_t(rw) * size_t(rh)) {
+                    loaded = std::make_shared<Replacement>();
+                    loaded->w = rw;
+                    loaded->h = rh;
+                    loaded->kx = float(rw) / float(w);
+                    loaded->ky = float(rh) / float(h);
+                    loaded->rgba = std::move(pixels);
+                    ++g_stats.textures_replaced;
+                }
+                cached = g_replacements.emplace(key, loaded).first;
+            }
+            replacement = cached->second.get();
+        }
+        found.emplace(fields, replacement);
+    }
+    return found;
+}
 
-    // Clear to the colour and depth the game set.
+void clear_target(Target& t) {
     const u32 clear = io32_at(0x350);
     const u32 clear_color = color15_to_18(clear & 0x7FFF) | (((clear >> 16) & 31) << 18);
     const u8 clear_id = u8((clear >> 24) & 63);
     const bool clear_fog = clear & 0x8000;
     const u32 clear_depth15 = io16_at(0x354) & 0x7FFF;
     const float clear_depth = float(clear_depth15 * 0x200u + 0x1FFu) / float(0xFFFFFF);
-    for (int y = 0; y < kHeight; ++y) {
-        for (int x = 0; x < kWidth; ++x) {
-            g_pixels->depth[y][x] = clear_depth;
-            g_pixels->color[y][x] = clear_color;
-            g_pixels->id[y][x] = clear_id;
-            g_pixels->translucent_id[y][x] = -1;
-            g_pixels->fog[y][x] = clear_fog;
-            g_pixels->stencil[y][x] = false;
-        }
-    }
+    std::fill(t.depth.begin(), t.depth.end(), clear_depth);
+    std::fill(t.color.begin(), t.color.end(), clear_color);
+    std::fill(t.id.begin(), t.id.end(), clear_id);
+    std::fill(t.translucent_id.begin(), t.translucent_id.end(), s16(-1));
+    std::fill(t.fog.begin(), t.fog.end(), u8(clear_fog));
+    std::fill(t.stencil.begin(), t.stencil.end(), u8(0));
+}
 
-    // Opaque first; translucent afterwards, top of the screen first unless the game keeps order.
+// Opaque first; translucent afterwards, top of the screen first unless the game keeps order.
+std::vector<const Polygon*> drawing_order(bool manual_sort) {
     std::vector<const Polygon*> order;
     order.reserve(g_ready.size());
     for (const Polygon& p : g_ready) {
@@ -756,14 +923,59 @@ void draw_list() {
                              return a->y_max != b->y_max ? a->y_max < b->y_max : a->y_min < b->y_min;
                          });
     }
-    for (const Polygon* p : order) {
-        for (std::size_t i = 1; i + 1 < p->vertices.size(); ++i) {
-            draw_triangle(*p, p->vertices[0], p->vertices[i], p->vertices[i + 1], disp, w_mode);
+    return order;
+}
+
+// The game's own picture is drawn on one core; the screen's in bands of rows on all of them. Each
+// band sees every polygon in the same order, so the result is the same as on one core.
+void draw_into(Target& t, const std::vector<const Polygon*>& order, u32 disp, bool w_mode,
+               const std::unordered_map<u64, const Replacement*>* textures, bool parallel) {
+    clear_target(t);
+    std::vector<const Replacement*> replacements(order.size(), nullptr);
+    if (textures != nullptr && !textures->empty()) {
+        for (size_t k = 0; k < order.size(); ++k) {
+            const Polygon* p = order[k];
+            const u64 fields = (u64(p->tex_param & ~((15u << 16) | (3u << 30))) << 32) | p->pal_base;
+            const auto found = textures->find(fields);
+            if (found != textures->end()) replacements[k] = found->second;
         }
     }
-    apply_edges_and_fog(disp);
-    std::memcpy(g_picture, g_pixels->color, sizeof g_picture);
+    const auto rows = [&](int first, int last) {
+        for (size_t k = 0; k < order.size(); ++k) {
+            const Polygon* p = order[k];
+            for (std::size_t i = 1; i + 1 < p->vertices.size(); ++i) {
+                draw_triangle(*p, p->vertices[0], p->vertices[i], p->vertices[i + 1], disp, w_mode, t, replacements[k],
+                              first, last);
+            }
+        }
+    };
+    if (parallel) parallel_rows(t.h, rows);
+    else rows(0, t.h);
+    apply_edges_and_fog(disp, t, parallel);
+}
+
+void draw_list() {
+    u32 disp = io16_at(0x60);
+    static const bool no_textures = std::getenv("MPDS_NO_TEXTURES") != nullptr;
+    if (no_textures) disp &= ~1u;
+    const bool w_mode = g_swap_param & 2;
+    const std::vector<const Polygon*> order = drawing_order(g_swap_param & 1);
+
+    // The game's own picture: the 2D engines and the display capture read it.
+    draw_into(g_native, order, disp, w_mode, nullptr, false);
+    std::memcpy(g_picture, g_native.color.data(), sizeof g_picture);
     ++g_stats.lists_drawn;
+
+    // The screen's picture, only for showing; it never goes back into the game.
+    const bool display = g_display_scale > 1 || g_display_replace;
+    const auto textures = prepare_textures(disp);
+    if (!display) return;
+    if (g_display.scale != g_display_scale || g_display.color.empty()) g_display.resize(g_display_scale);
+    draw_into(g_display, order, disp, w_mode, &textures, true);
+    const int next = g_display_index ^ 1;
+    g_display_picture[next] = g_display.color;
+    g_display_index = next;
+    g_display_drawn = true;
 }
 
 // --- Commands ---
@@ -1100,6 +1312,24 @@ void gpu3d_vblank() {
 }
 
 const u32* gpu3d_line(u32 line) { return g_picture[line]; }
+
+void gpu3d_set_display(int scale, bool replace_textures, bool dump_textures, const Gpu3dTextureHooks& hooks) {
+    g_display_scale = std::clamp(scale, 1, 8);
+    g_display_replace = replace_textures;
+    g_display_dump = dump_textures;
+    g_hooks = hooks;
+    g_display_drawn = false;
+    g_replacements.clear();
+}
+
+int gpu3d_display_scale() { return g_display_scale; }
+
+int gpu3d_display_index() { return g_display_drawn ? g_display_index : -1; }
+
+const u32* gpu3d_display_picture(int index) {
+    if (index < 0 || index > 1 || g_display_picture[index].empty()) return nullptr;
+    return g_display_picture[index].data();
+}
 
 const Gpu3dStats& gpu3d_stats() { return g_stats; }
 

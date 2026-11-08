@@ -1,6 +1,10 @@
 #include "ppu.h"
 
 #include "gpu3d.h"
+
+#include <algorithm>
+#include <thread>
+#include <vector>
 #include "memory.h"
 
 #include <algorithm>
@@ -81,6 +85,7 @@ struct Line {
     bool obj_window[kScreenWidth];
     u8 bg0_alpha[kScreenWidth];   // from the 3D picture: 1 to 31; 0 when background 0 is not 3D
     u32 bg0_rgb[kScreenWidth];    // its colour, keeping the 3D picture's 6 bits per channel
+    u8 bg0_x[kScreenWidth];       // the column of the 3D picture it came from
 };
 Line g_line;
 
@@ -407,7 +412,7 @@ Rgb6 mix(Rgb6 top, Rgb6 under, u32 eva, u32 evb) {
             std::min(63u, (top.b * eva + under.b * evb + 8) >> 4)};
 }
 
-void merge_layers(const Engine& e, u32 dispcnt, const u8* mask, u8* rgba) {
+void merge_layers(const Engine& e, u32 dispcnt, const u8* mask, u8* rgba, u16* map, u8* master_row) {
     const u16 bldcnt = reg16(e, 0x50), bldalpha = reg16(e, 0x52);
     const u32 effect = (bldcnt >> 6) & 3;
     const u32 eva = std::min(16u, bldalpha & 31u), evb = std::min(16u, (bldalpha >> 8) & 31u);
@@ -417,6 +422,7 @@ void merge_layers(const Engine& e, u32 dispcnt, const u8* mask, u8* rgba) {
     const u16 backdrop = palette16(e.palette);
     u32 bg_priority[4];
     for (int b = 0; b < 4; ++b) bg_priority[b] = reg16(e, 0x08 + b * 2) & 3;
+    *master_row = u8((master_mode << 5) | master_factor);
 
     for (u32 x = 0; x < kScreenWidth; ++x) {
         constexpr int kBackdrop = 5, kObj = 4;
@@ -445,6 +451,9 @@ void merge_layers(const Engine& e, u32 dispcnt, const u8* mask, u8* rgba) {
         };
         Rgb6 out = layer_rgb(top, top_color);
         const bool under_ok = bldcnt & (1u << (8 + under));
+        // Shown as the 3D picture alone: the screen may take this pixel from its own picture.
+        const bool effect_here = (mask[x] & 0x20) && (bldcnt & 1u) && ((effect == 1 && under_ok) || effect >= 2);
+        map[x] = (top == 0 && g_line.bg0_alpha[x] == 31 && !effect_here) ? g_line.bg0_x[x] : u16(0xFFFF);
         const u8 alpha = top == kObj ? g_line.obj_alpha[x] : 0;
         if ((alpha & 0x80) && under_ok) {
             const bool bitmap = alpha & 0x40;
@@ -489,7 +498,9 @@ void merge_layers(const Engine& e, u32 dispcnt, const u8* mask, u8* rgba) {
     }
 }
 
-void render_engine(Engine& e, u32 line, u8* rgba) {
+void render_engine(Engine& e, u32 line, u8* rgba, u16* map, u8* master_row) {
+    std::fill(map, map + kScreenWidth, u16(0xFFFF));
+    *master_row = 0;
     const u32 dispcnt = reg32(e, 0);
     const u32 display = (dispcnt >> 16) & 3;
     const bool main_engine = e.index == 0;
@@ -529,6 +540,7 @@ void render_engine(Engine& e, u32 line, u8* rgba) {
             g_line.bg[0][x] = kOpaque;
             g_line.bg0_rgb[x] = pixel & 0x3FFFF;
             g_line.bg0_alpha[x] = u8(alpha);
+            g_line.bg0_x[x] = u8((x + scroll) & 0xFF);
         }
     } else if (dispcnt & 0x100) {
         draw_text_bg(e, 0, line, dispcnt, g_line.bg[0]);
@@ -548,7 +560,7 @@ void render_engine(Engine& e, u32 line, u8* rgba) {
 
     u8 mask[kScreenWidth];
     build_window_mask(e, line, dispcnt, mask);
-    merge_layers(e, dispcnt, mask, rgba);
+    merge_layers(e, dispcnt, mask, rgba, map, master_row);
 
     // The reference points move on by one line.
     for (int which = 0; which < 2; ++which) {
@@ -561,6 +573,12 @@ void render_engine(Engine& e, u32 line, u8* rgba) {
 // Display capture: engine A's line, the 3D picture or a VRAM bank goes into a VRAM bank. The game
 // starts one by setting bit 31; it runs from the next frame's first line and then clears the bit.
 bool g_capture_running = false;
+
+// For the screen's picture: per pixel of the frame the 3D column it shows alone (0xFFFF: none),
+// per line the master brightness (mode << 5 | factor), and which 3D picture the frame used.
+u16 g_map_back[kScreenHeight * 2 * kScreenWidth], g_map_front[kScreenHeight * 2 * kScreenWidth];
+u8 g_master_back[kScreenHeight * 2], g_master_front[kScreenHeight * 2];
+int g_display_back = -1, g_display_front = -1;
 
 void capture_line(u32 line, u32 control) {
     static constexpr u32 kWidths[4] = {128, 256, 256, 256};
@@ -622,16 +640,28 @@ void ppu_render_line(u32 line) {
     const bool a_on_top = powcnt & 0x8000;
     u8* top = g_back + size_t(line) * kScreenWidth * 4;
     u8* bottom = top + size_t(kScreenHeight) * kScreenWidth * 4;
+    u16* map_top = g_map_back + size_t(line) * kScreenWidth;
+    u16* map_bottom = map_top + size_t(kScreenHeight) * kScreenWidth;
+    u8* master_top = g_master_back + line;
+    u8* master_bottom = master_top + kScreenHeight;
     u32 capture;
     std::memcpy(&capture, &g_machine.io[0x64], 4);
-    if (line == 0) g_capture_running = capture & 0x80000000u;
-    render_engine(g_engines[0], line, a_on_top ? top : bottom);
-    render_engine(g_engines[1], line, a_on_top ? bottom : top);
+    if (line == 0) {
+        g_capture_running = capture & 0x80000000u;
+        g_display_back = gpu3d_display_index();
+    }
+    render_engine(g_engines[0], line, a_on_top ? top : bottom, a_on_top ? map_top : map_bottom,
+                  a_on_top ? master_top : master_bottom);
+    render_engine(g_engines[1], line, a_on_top ? bottom : top, a_on_top ? map_bottom : map_top,
+                  a_on_top ? master_bottom : master_top);
     if (g_capture_running) capture_line(line, capture);
 }
 
 void ppu_finish_frame() {
     std::memcpy(g_front, g_back, sizeof g_front);
+    std::memcpy(g_map_front, g_map_back, sizeof g_map_front);
+    std::memcpy(g_master_front, g_master_back, sizeof g_master_front);
+    g_display_front = g_display_back;
     if (g_capture_running) {
         g_capture_running = false;
         g_machine.io[0x67] &= 0x7F;  // finished: the enable bit clears itself
@@ -639,5 +669,57 @@ void ppu_finish_frame() {
 }
 
 const u8* ppu_frame() { return g_front; }
+
+bool ppu_compose_display(std::vector<u8>& out, int& scale) {
+    scale = gpu3d_display_scale();
+    const u32* picture = gpu3d_display_picture(g_display_front);
+    const int s = scale;
+    const size_t out_w = size_t(kScreenWidth) * size_t(s);
+    out.resize(out_w * size_t(kScreenHeight * 2) * size_t(s) * 4);
+    const auto rows = [&](int first, int last) {
+    for (int y = first; y < last; ++y) {
+        const u32 master = g_master_front[y];
+        const u32 master_mode = master >> 5, factor = master & 31;
+        const int line3d = y % kScreenHeight;
+        for (int x = 0; x < kScreenWidth; ++x) {
+            const u8* native = g_front + (size_t(y) * kScreenWidth + size_t(x)) * 4;
+            const u16 column = g_map_front[size_t(y) * kScreenWidth + size_t(x)];
+            for (int j = 0; j < s; ++j) {
+                u8* row = &out[((size_t(y) * size_t(s) + size_t(j)) * out_w + size_t(x) * size_t(s)) * 4];
+                for (int i = 0; i < s; ++i) {
+                    u8* px = row + size_t(i) * 4;
+                    u32 p = 0;
+                    if (column != 0xFFFF && picture != nullptr) {
+                        p = picture[(size_t(line3d) * size_t(s) + size_t(j)) * out_w + size_t(column) * size_t(s) + size_t(i)];
+                    }
+                    if (((p >> 18) & 31) == 0) {  // nothing of the 3D picture here: the game's pixel
+                        std::memcpy(px, native, 4);
+                        continue;
+                    }
+                    u32 c[3] = {p & 63, (p >> 6) & 63, (p >> 12) & 63};
+                    for (u32& v : c) {
+                        if (master_mode == 1) v += ((63 - v) * factor) >> 4;
+                        else if (master_mode == 2) v -= (v * factor + 15) >> 4;
+                    }
+                    px[0] = u8((c[0] << 2) | (c[0] >> 4));
+                    px[1] = u8((c[1] << 2) | (c[1] >> 4));
+                    px[2] = u8((c[2] << 2) | (c[2] >> 4));
+                    px[3] = 255;
+                }
+            }
+        }
+    }
+    };
+    // In bands of rows on several cores; each band writes only its own rows.
+    const int threads = s > 1 ? std::max(1, std::min(8, int(std::thread::hardware_concurrency()))) : 1;
+    std::vector<std::thread> workers;
+    const int step = (kScreenHeight * 2 + threads - 1) / threads;
+    for (int first = step; first < kScreenHeight * 2; first += step) {
+        workers.emplace_back(rows, first, std::min(kScreenHeight * 2, first + step));
+    }
+    rows(0, std::min(kScreenHeight * 2, step));
+    for (std::thread& t : workers) t.join();
+    return picture != nullptr;
+}
 
 const PpuGaps& ppu_gaps() { return g_gaps; }
