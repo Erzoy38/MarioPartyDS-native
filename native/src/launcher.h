@@ -27,6 +27,9 @@ struct AppSettings {
     int volume = 100;              // percent
     std::string mic_device;        // a recording device's name; "" Windows' default; "off" keys only
     int mic_sensitivity = 50;      // percent: how loud counts as blowing
+    bool cheat_minigames = false;  // every minigame unlocked
+    bool cheat_boards = false;     // every board unlocked
+    bool file_mods = false;        // files in mods\ replace the game's
 };
 
 AppSettings load_settings(const std::filesystem::path& file);

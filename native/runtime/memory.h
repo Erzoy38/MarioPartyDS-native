@@ -33,3 +33,6 @@ const u8* vram_obj_ext_palette(int engine);
 // Texture memory: four slots of 128 KiB. Texture palettes: six slots of 16 KiB.
 const u8* vram_texture_slot(u32 slot);
 const u8* vram_texture_palette_slot(u32 slot);
+
+// For finding which code reads a range: hook(addr, size) on every read in [first, last]. Off by default.
+void memory_watch_reads(u32 first, u32 last, void (*hook)(u32 addr, u32 size));

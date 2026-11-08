@@ -22,6 +22,7 @@
 #include "launcher.h"
 #include "machine.h"
 #include "microphone.h"
+#include "rom_mods.h"
 #include "net.h"
 #include "ppu.h"
 #include "sound.h"
@@ -531,6 +532,18 @@ int main(int argc, char** argv) {
     const std::filesystem::path save_path =
         save_arg.empty() ? data_folder / "MarioPartyDS.sav" : std::filesystem::u8path(save_arg);
     settings.save = read_file(save_path);
+    if (app.file_mods) {
+        std::string mod_log;
+        const int replaced = apply_file_mods(rom, mods_folder(), mod_log);
+        std::printf("file mods: %d files replaced\n%s", replaced, mod_log.c_str());
+    }
+    // Cheats on this player's own game; a guest's game comes from the host and keeps the host's.
+    MachineCheats cheats;
+    if (net.role != NetRole::Guest) {
+        cheats.all_minigames = app.cheat_minigames;
+        cheats.all_boards = app.cheat_boards;
+    }
+    machine_set_cheats(cheats);
     machine_boot(rom, settings);
     g_window = window;
     g_renderer = renderer;

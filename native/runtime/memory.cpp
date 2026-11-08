@@ -136,7 +136,19 @@ const u8* vram_obj_ext_palette(int engine) { return g_obj_ext[engine]; }
 const u8* vram_texture_slot(u32 slot) { return slot < 4 ? g_tex_slot[slot] : nullptr; }
 const u8* vram_texture_palette_slot(u32 slot) { return slot < 6 ? g_tex_pal[slot] : nullptr; }
 
+// For finding which code reads a range (headless --read-watch); empty range: off.
+u32 g_read_watch_first = 1, g_read_watch_last = 0;
+void (*g_read_watch_hook)(u32 addr, u32 size) = nullptr;
+void memory_watch_reads(u32 first, u32 last, void (*hook)(u32 addr, u32 size)) {
+    g_read_watch_first = first;
+    g_read_watch_last = last;
+    g_read_watch_hook = hook;
+}
+#define WATCH_READ(addr, size) \
+    if ((addr) >= g_read_watch_first && (addr) <= g_read_watch_last) g_read_watch_hook(addr, size)
+
 u8 rd8(u32 addr) {
+    WATCH_READ(addr, 1);
     u32 value;
     if (special_read(addr, value)) return u8(value);
     if (const u8* p = locate(addr)) return *p;
@@ -146,6 +158,7 @@ u8 rd8(u32 addr) {
 
 u16 rd16(u32 addr) {
     addr &= ~1u;
+    WATCH_READ(addr, 2);
     u32 value;
     if (special_read(addr, value)) return u16(value);
     if (const u8* p = locate(addr)) {
@@ -159,6 +172,7 @@ u16 rd16(u32 addr) {
 
 u32 rd32(u32 addr) {
     addr &= ~3u;
+    WATCH_READ(addr, 4);
     u32 value;
     if (special_read(addr, value)) return value;
     if (const u8* p = locate(addr)) {

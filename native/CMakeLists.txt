@@ -27,7 +27,9 @@ target_link_libraries(game_code PUBLIC runtime)
 target_compile_options(game_code PRIVATE /W0 /Od /bigobj /utf-8)
 
 # The runtime and the generated code call each other, so the linker sees both twice.
-add_executable(MarioPartyDS-headless runtime/headless.cpp)
+add_executable(MarioPartyDS-headless runtime/headless.cpp src/rom_mods.cpp)
+target_include_directories(MarioPartyDS-headless PRIVATE src)
+target_compile_definitions(MarioPartyDS-headless PRIVATE _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
 target_link_libraries(MarioPartyDS-headless PRIVATE runtime game_code runtime)
 target_compile_options(MarioPartyDS-headless PRIVATE /W4 /WX /utf-8)
 
@@ -39,7 +41,7 @@ target_compile_options(MarioPartyDS-server PRIVATE /W4 /WX /utf-8)
 
 set(SDL3_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL3/cmake")
 find_package(SDL3 REQUIRED CONFIG)
-add_executable(MarioPartyDS WIN32 src/main.cpp src/launcher.cpp src/start_screen.cpp src/ui.cpp src/display.cpp src/microphone.cpp)
+add_executable(MarioPartyDS WIN32 src/main.cpp src/launcher.cpp src/start_screen.cpp src/ui.cpp src/display.cpp src/microphone.cpp src/rom_mods.cpp)
 target_link_libraries(MarioPartyDS PRIVATE runtime game_code runtime SDL3::SDL3)
 target_compile_options(MarioPartyDS PRIVATE /W4 /WX /utf-8)
 target_compile_definitions(MarioPartyDS PRIVATE _CRT_SECURE_NO_WARNINGS

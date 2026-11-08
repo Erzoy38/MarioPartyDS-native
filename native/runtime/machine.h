@@ -29,6 +29,13 @@ void machine_step();
 // For tests: the first time the game picks its next mode after the title it goes to `mode`.
 void machine_force_mode(int mode);
 
+// Unlocks, applied every game tick and saved by the game like its own progress.
+struct MachineCheats {
+    bool all_minigames = false;  // every minigame in Free Play
+    bool all_boards = false;     // the fifth board (Bowser's Pinball Machine) too
+};
+void machine_set_cheats(const MachineCheats& cheats);
+
 // Runs until the next picture is finished.
 void machine_run_frame();
 

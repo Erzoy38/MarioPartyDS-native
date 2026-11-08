@@ -22,6 +22,7 @@ FILES = [
     ("ONLINE.md", "ONLINE.txt"),
     ("LICENSE", "LIZENZ.txt"),
     (os.path.join("native", "package", "TEXTUREN.txt"), os.path.join("textures", "LIESMICH.txt")),
+    (os.path.join("native", "package", "MODS.txt"), os.path.join("mods", "LIESMICH.txt")),
     (os.path.join("native", "third_party", "SDL3", "LICENSE.txt"), "SDL3-LICENSE.txt"),
 ]
 FORBIDDEN = (".nds", ".sav", ".dsv", ".key", ".ini", ".log", ".rejoin")

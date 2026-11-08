@@ -15,6 +15,7 @@
 #include "cpu.h"
 #include "gpu3d.h"
 #include "hw.h"
+#include "rom_mods.h"
 #include "lobby.h"
 #include "machine.h"
 #include "memory.h"
@@ -409,7 +410,30 @@ void apply_forced_mode(Cpu& c) {
 int g_unlock_minigames = 0;
 constexpr u32 kPlayedMinigames = 0x021547B8;
 
+// --or32 ADDR:MASK, repeatable: ORs MASK into the word at ADDR every game tick. For finding flags.
+std::vector<std::pair<u32, u32>> g_or32;
+
+// --mods FOLDER: file mods from FOLDER (see src/rom_mods.h). --cheats minigames,boards: the cheats.
+std::string g_mods_folder;
+MachineCheats g_cheats_option;
+
+// --read-watch FIRST:LAST:TICK: from game tick TICK on, prints each new pair of reading block and
+// address in [FIRST, LAST] once. For finding which code checks a flag.
+u32 g_watch_first = 1, g_watch_last = 0, g_watch_tick = 0, g_ticks_seen = 0;
+std::set<std::pair<u32, u32>> g_watch_seen;
+void on_watched_read(u32 addr, u32 size) {
+    if (g_ticks_seen < g_watch_tick) return;
+    const u32 pc = machine_cpu().pc;
+    if (g_watch_seen.insert({pc, addr}).second) {
+        std::printf("read %08x (%u bytes) by block %08x at tick %u\n", addr, size, pc, g_ticks_seen);
+    }
+}
+
 void apply_unlock(const Cpu& c) {
+    if (c.pc == kGameTick) ++g_ticks_seen;
+    if (c.pc == kGameTick) {
+        for (const auto& [address, mask] : g_or32) wr32(address, rd32(address) | mask);
+    }
     if (g_unlock_minigames <= 0 || c.pc != kGameTick) return;
     for (int i = 0; i < g_unlock_minigames && i < 80; ++i) {
         const u32 address = kPlayedMinigames + u32(i / 8);
@@ -534,6 +558,20 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--unlock-minigames")) g_unlock_minigames = std::atoi(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--name")) settings.player_name = argv[i + 1];
         else if (!std::strcmp(argv[i], "--language")) settings.language = u8(std::atoi(argv[i + 1]));
+        else if (!std::strcmp(argv[i], "--mods")) g_mods_folder = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--cheats")) {
+            g_cheats_option.all_minigames = std::strstr(argv[i + 1], "minigames") != nullptr;
+            g_cheats_option.all_boards = std::strstr(argv[i + 1], "boards") != nullptr;
+        }
+        else if (!std::strcmp(argv[i], "--read-watch")) {
+            std::sscanf(argv[i + 1], "%x:%x:%u", &g_watch_first, &g_watch_last, &g_watch_tick);
+            memory_watch_reads(g_watch_first, g_watch_last, on_watched_read);
+        }
+        else if (!std::strcmp(argv[i], "--or32")) {
+            u32 address = 0, mask = 0;
+            std::sscanf(argv[i + 1], "%x:%x", &address, &mask);
+            g_or32.push_back({address, mask});
+        }
         else if (!std::strcmp(argv[i], "--mic-level")) g_mic_level = float(std::atof(argv[i + 1])) / 100.0f;
         else if (!std::strcmp(argv[i], "--boot-type")) settings.boot_type = u16(std::strtoul(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--save")) settings.save = read_file(argv[i + 1]);
@@ -550,7 +588,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    const std::vector<u8> rom = read_file(argv[1]);
+    std::vector<u8> rom = read_file(argv[1]);
     const std::string problem = machine_check_rom(rom);
     if (!problem.empty()) {
         std::fprintf(stderr, "%s\n", problem.c_str());
@@ -576,6 +614,12 @@ int main(int argc, char** argv) {
         if (lobby_options.exit_after_start) return 0;
     }
     if (input_delay >= 0) net.input_delay = input_delay;
+    if (!g_mods_folder.empty()) {
+        std::string mod_log;
+        const int replaced = apply_file_mods(rom, std::filesystem::u8path(g_mods_folder), mod_log);
+        std::printf("file mods: %d files replaced\n%s", replaced, mod_log.c_str());
+    }
+    machine_set_cheats(g_cheats_option);
     machine_boot(rom, settings);
     net_start(net);
     const bool net_running = net.role != NetRole::Off;

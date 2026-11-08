@@ -35,8 +35,9 @@ void automatic_window_size(int layout, int aspect, int scale, int& w, int& h);
 // Window size or fullscreen mode from the settings (`scale` for automatic).
 void apply_window_mode(SDL_Window* window, const AppSettings& settings, int scale, bool fullscreen);
 
-// --- Texture packs ---
+// --- Texture packs and file mods ---
 std::filesystem::path texture_folder();
+std::filesystem::path mods_folder();  // "mods" next to the program
 // Indexes the pack and hands the loading and dumping to the 3D renderer.
 void texture_pack_start(int render_scale, bool replace, bool dump);
 // Opens the texture folder in Explorer (made first if missing).

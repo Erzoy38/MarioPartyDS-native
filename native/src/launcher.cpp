@@ -367,6 +367,9 @@ AppSettings load_settings(const std::filesystem::path& file) {
         else if (key == "volume") settings.volume = std::clamp(std::atoi(value.c_str()), 0, 100);
         else if (key == "mic_device") settings.mic_device = value;
         else if (key == "mic_sensitivity") settings.mic_sensitivity = std::clamp(std::atoi(value.c_str()), 10, 100);
+        else if (key == "cheat_minigames") settings.cheat_minigames = value == "1";
+        else if (key == "cheat_boards") settings.cheat_boards = value == "1";
+        else if (key == "file_mods") settings.file_mods = value == "1";
     }
     return settings;
 }
@@ -378,7 +381,9 @@ void save_settings(const std::filesystem::path& file, const AppSettings& s) {
         << s.language << "\nsmooth=" << (s.smooth ? 1 : 0) << "\nresolution=" << s.resolution << "\nlayout="
         << s.layout << "\naspect=" << s.aspect << "\nrender_scale=" << s.render_scale << "\nhd_textures="
         << (s.hd_textures ? 1 : 0) << "\ndump_textures=" << (s.dump_textures ? 1 : 0) << "\nvolume=" << s.volume
-        << "\nmic_device=" << s.mic_device << "\nmic_sensitivity=" << s.mic_sensitivity << "\n";
+        << "\nmic_device=" << s.mic_device << "\nmic_sensitivity=" << s.mic_sensitivity << "\ncheat_minigames="
+        << (s.cheat_minigames ? 1 : 0) << "\ncheat_boards=" << (s.cheat_boards ? 1 : 0) << "\nfile_mods="
+        << (s.file_mods ? 1 : 0) << "\n";
 }
 
 std::filesystem::path known_servers_file(const std::filesystem::path& settings_file) {

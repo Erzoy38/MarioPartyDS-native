@@ -132,6 +132,24 @@ Cpu& machine_cpu() { return g_cpu; }
 int g_forced_mode = -1;
 void machine_force_mode(int mode) { g_forced_mode = mode; }
 
+// Cheats: bits of the "played" field in the save block (0x021547B8, read by 0x0204AE0C), set
+// every game tick. Bits 0 to 72 are the minigames Free Play lists; bit 77 opens the fifth board
+// (found by setting bits and watching the board select). The game saves them like its own.
+MachineCheats g_cheats;
+void machine_set_cheats(const MachineCheats& cheats) { g_cheats = cheats; }
+
+void apply_cheats() {
+    constexpr u32 kPlayed = 0x021547B8;
+    const auto set_bit = [](u32 bit) {
+        const u32 address = kPlayed + bit / 8;
+        wr8(address, u8(rd8(address) | (1u << (bit % 8))));
+    };
+    if (g_cheats.all_minigames) {
+        for (u32 bit = 0; bit < 73; ++bit) set_bit(bit);
+    }
+    if (g_cheats.all_boards) set_bit(77);
+}
+
 void machine_step() {
     Cpu& c = g_cpu;
     hw_step(c);
@@ -143,7 +161,10 @@ void machine_step() {
         g_forced_mode = -1;
     }
     if (overlay_watch_calls(c)) std::memset(g_block_cache, 0, sizeof g_block_cache);
-    if (c.pc == kGameTick) net_tick();
+    if (c.pc == kGameTick) {
+        net_tick();
+        apply_cheats();
+    }
     if (net_hook(c)) return;
     const u32 key = c.pc | c.thumb;
     BlockCacheEntry& cached = g_block_cache[(key >> 1) & (kBlockCacheSize - 1)];

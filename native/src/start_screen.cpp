@@ -2,6 +2,9 @@
 
 #include "display.h"
 #include "microphone.h"
+#include "rom_mods.h"
+
+#include <fstream>
 #include "ui.h"
 
 #include <algorithm>
@@ -558,6 +561,26 @@ private:
             level.meter = true;
             rows.push_back(level);
         } else if (tab == 3) {
+            Row minigames{"UNLOCK ALL MINIGAMES", settings_.cheat_minigames ? "On" : "Off",
+                          "Every minigame shows up in Minigame Mode's Free Play, as if it had been played. "
+                          "The game saves this with your progress: once saved, it stays even if you turn the "
+                          "cheat off again."};
+            minigames.kind = Row::Kind::Choice;
+            minigames.change = [this](int) {
+                settings_.cheat_minigames = !settings_.cheat_minigames;
+                save();
+            };
+            rows.push_back(minigames);
+            Row boards{"UNLOCK ALL BOARDS", settings_.cheat_boards ? "On" : "Off",
+                       "Bowser's Pinball Machine, the board you normally get by finishing Story Mode, can be "
+                       "chosen in Party Mode. Saved with your progress like the minigames."};
+            boards.kind = Row::Kind::Choice;
+            boards.change = [this](int) {
+                settings_.cheat_boards = !settings_.cheat_boards;
+                save();
+            };
+            rows.push_back(boards);
+        } else if (tab == 4) {
             Row hd{"HD TEXTURES", settings_.hd_textures ? "On" : "Off",
                    "Texture mods: the game's 3D textures replaced by pictures from the folder \"textures\" next to "
                    "the game, for example HD textures. A pack goes into its own folder there. Best together with "
@@ -583,6 +606,51 @@ private:
                 if (delta == 0) open_texture_folder();
             };
             rows.push_back(folder);
+            const std::vector<ModInfo> mods = find_mods(mods_folder());
+            int mod_files = 0;
+            for (const ModInfo& m : mods) mod_files += m.files;
+            Row file_mods{"FILE MODS",
+                          settings_.file_mods ? "On (" + std::to_string(mods.size()) + " mods, " + std::to_string(mod_files) + " files)"
+                                              : "Off",
+                          "Mods that replace the game's files, for example a character's model, textures and "
+                          "pictures, so another character appears in its place. Each mod is a folder in "
+                          "\"mods\" next to the game, holding files with the same paths as the game's own. "
+                          "Online, every player needs the same mods."};
+            file_mods.kind = Row::Kind::Choice;
+            file_mods.change = [this](int) {
+                settings_.file_mods = !settings_.file_mods;
+                save();
+            };
+            rows.push_back(file_mods);
+            Row mods_folder_row{"OPEN MODS FOLDER", "", "Opens the folder \"mods\" in Explorer; it is made if missing."};
+            mods_folder_row.change = [](int delta) {
+                if (delta != 0) return;
+                std::error_code error;
+                std::filesystem::create_directories(mods_folder(), error);
+                std::string url = "file:///";
+                const std::u8string text = mods_folder().u8string();
+                for (char c : std::string(text.begin(), text.end())) {
+                    if (c == '\\') url += '/';
+                    else if (c == ' ') url += "%20";
+                    else url += c;
+                }
+                SDL_OpenURL(url.c_str());
+            };
+            rows.push_back(mods_folder_row);
+            Row extract{"EXTRACT GAME FILES", "",
+                        "For making a mod: writes all of the game's files to mods\\_game_files. Copy the files "
+                        "you change into a folder of your mod, keeping their paths. Needs the ROM to be chosen."};
+            extract.change = [this](int delta) {
+                if (delta != 0) return;
+                std::ifstream in(std::filesystem::u8path(rom_path_), std::ios::binary);
+                const std::vector<std::uint8_t> rom((std::istreambuf_iterator<char>(in)), {});
+                if (rom.empty()) {
+                    settings_note_ = "Choose the ROM first.";
+                    return;
+                }
+                settings_note_ = std::to_string(extract_game_files(rom, mods_folder())) + " files written to mods\\_game_files.";
+            };
+            rows.push_back(extract);
         } else {
             Row name{"PLAYER NAME", settings_.name, "Your name in the game and in online rooms, up to 10 letters."};
             name.kind = Row::Kind::Field;
@@ -652,8 +720,8 @@ private:
 
     void draw_settings(const Input& in) {
         update_microphone();
-        static const char* const kTabs[] = {"PRELAUNCH", "VIDEO", "SOUND", "MODS", "ONLINE"};
-        constexpr int kTabCount = 5;
+        static const char* const kTabs[] = {"PRELAUNCH", "VIDEO", "SOUND", "CHEATS", "MODS", "ONLINE"};
+        constexpr int kTabCount = 6;
         const SDL_FRect panel{78, 60, 868, 458};
         ui::fill_rounded(r_, panel, 12, kPanel);
         ui::outline_rounded(r_, panel, 12, kPanelEdge);

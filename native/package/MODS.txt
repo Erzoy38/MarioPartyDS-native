@@ -1,0 +1,33 @@
+Datei-Mods (z. B. andere Figuren)
+================================
+
+In diesen Ordner kommen Mods, die Dateien des Spiels ersetzen: Modelle, Texturen, Bilder oder
+Sounds. So kann zum Beispiel eine andere Figur an die Stelle einer Spielfigur treten. Die ROM-Datei
+selbst wird dabei nie verändert; das Spiel liest beim Start die Ersatzdateien.
+
+Einen Mod benutzen
+------------------
+1. Den Ordner des Mods hierher legen, z. B. mods\MeinMod\...
+2. Im Startbildschirm: SETTINGS -> MODS -> FILE MODS auf "On". Dort steht auch, wie viele Mods
+   und Dateien gefunden wurden.
+3. Das Spiel starten.
+
+Liegen mehrere Mods hier, werden sie nach Namen geladen; ersetzen zwei dieselbe Datei, gewinnt der
+spätere.
+
+Einen Mod machen
+----------------
+1. SETTINGS -> MODS -> EXTRACT GAME FILES. Alle Dateien des Spiels landen in mods\_game_files
+   (Ordner, die mit "_" beginnen, sind keine Mods und werden nicht geladen).
+2. Die Dateien, die du ändern willst, mit DS-Modding-Werkzeugen bearbeiten. Modelle und Texturen
+   von Figuren liegen in den Formaten des DS (z. B. NSBMD, NSBTX), oft in gepackten Archiven
+   (Dateinamen mit _LZ).
+3. Die geänderten Dateien in einen eigenen Ordner legen, mit demselben Pfad wie im Spiel, z. B.
+   mods\MeinMod\data\GE\data_select_data_LZ.bin.
+
+Gut zu wissen
+-------------
+- Online brauchen alle Spieler dieselben Mods, sonst kann die Partie auseinanderlaufen.
+- Eine Datei, die nicht zum Spiel gehört, wird übersprungen; das Protokoll nennt sie.
+- Figuren aus anderen Spielen gehören deren Rechteinhabern. Gib Mods mit fremden Figuren nur
+  weiter, wenn du die Rechte daran hast.

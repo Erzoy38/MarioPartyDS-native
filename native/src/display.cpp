@@ -174,6 +174,11 @@ std::filesystem::path texture_folder() {
     return std::filesystem::u8path(std::string(base ? base : "")) / "textures";
 }
 
+std::filesystem::path mods_folder() {
+    const char* base = SDL_GetBasePath();
+    return std::filesystem::u8path(std::string(base ? base : "")) / "mods";
+}
+
 void texture_pack_start(int render_scale, bool replace, bool dump) {
     g_pack.clear();
     const std::filesystem::path folder = texture_folder();

@@ -18,6 +18,7 @@ ONLINE.txt                Anleitung für das Spielen über das Internet
 LIZENZ.txt                Urheberrecht und was erlaubt ist
 SDL3-LICENSE.txt          Lizenz von SDL3
 textures\                 Ordner für Texturpakete, mit Anleitung
+mods\                     Ordner für Datei-Mods, mit Anleitung
 
 Weitergeben
 -----------
@@ -39,7 +40,10 @@ Erster Start
               3D-Auflösung (1x bis 4x, schärfere 3D-Grafik)
    SOUND      Lautstärke, welches Mikrofon (PC, Headset, PS5-Controller per USB-Kabel),
               Mikrofon-Empfindlichkeit, Pegelanzeige zum Ausprobieren
-   MODS       Texturpakete (HD-Texturen), siehe textures\LIESMICH.txt
+   CHEATS     alle Minispiele und alle Spielbretter freischalten (wird mit dem Spielstand
+              gespeichert)
+   MODS       Texturpakete (HD-Texturen), siehe textures\LIESMICH.txt, und Datei-Mods
+              (z. B. andere Figuren), siehe mods\LIESMICH.txt
    ONLINE     eigener Name und die Server-Adresse, die der Host nennt
 
 Spielstand, Einstellungen und Protokoll liegen unter %APPDATA%\MarioPartyDS\MarioPartyDS\.
