@@ -111,13 +111,17 @@ void update_pad_pointer() {
     const int rx = SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_RIGHTX);
     const int ry = SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_RIGHTY);
     constexpr float kPixelsPerFrame = 3.0f / 32767.0f;
-    if (std::abs(rx) > kStickDeadZone) { g_pad.pointer_x += rx * kPixelsPerFrame; g_pad.pointer_shown = true; }
-    if (std::abs(ry) > kStickDeadZone) { g_pad.pointer_y += ry * kPixelsPerFrame; g_pad.pointer_shown = true; }
+    static Uint64 last_used = 0;
+    const Uint64 now = SDL_GetTicks();
+    if (std::abs(rx) > kStickDeadZone) { g_pad.pointer_x += rx * kPixelsPerFrame; last_used = now; }
+    if (std::abs(ry) > kStickDeadZone) { g_pad.pointer_y += ry * kPixelsPerFrame; last_used = now; }
     g_pad.pointer_x = std::clamp(g_pad.pointer_x, 0.0f, kScreenWidth - 1.0f);
     g_pad.pointer_y = std::clamp(g_pad.pointer_y, 0.0f, kScreenHeight - 1.0f);
     g_pad.touching = SDL_GetGamepadButton(g_pad.handle, SDL_GAMEPAD_BUTTON_RIGHT_STICK)
                      || SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000;
-    if (g_pad.touching) g_pad.pointer_shown = true;
+    if (g_pad.touching) last_used = now;
+    // The pointer shows while it is used and for 3 seconds after, then it is out of the way.
+    g_pad.pointer_shown = last_used != 0 && now - last_used < 3000;
 }
 
 std::vector<u8> read_file(const std::filesystem::path& path) {
