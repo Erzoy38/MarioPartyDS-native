@@ -37,6 +37,8 @@ Erster Start
    VIDEO      Auflösung (alle Auflösungen des Bildschirms), Vollbild, Anordnung der beiden
               Bildschirme (übereinander, nebeneinander, Hybrid), Bildformat (4:3, 16:9, Widescreen),
               3D-Auflösung (1x bis 4x, schärfere 3D-Grafik)
+   SOUND      Lautstärke, welches Mikrofon (PC, Headset, PS5-Controller per USB-Kabel),
+              Mikrofon-Empfindlichkeit, Pegelanzeige zum Ausprobieren
    MODS       Texturpakete (HD-Texturen), siehe textures\LIESMICH.txt
    ONLINE     eigener Name und die Server-Adresse, die der Host nennt
 
@@ -51,7 +53,7 @@ Q / W             L / R
 Enter             Start
 Umschalt rechts   Select
 Maus              Touchscreen (unterer Bildschirm, linke Maustaste)
-Leertaste         ins Mikrofon pusten
+Leertaste         ins Mikrofon pusten (oder ins echte Mikrofon, siehe SETTINGS -> SOUND)
 F10               Fenstergröße
 F11               Vollbild
 Esc               Zurück zum Startbildschirm

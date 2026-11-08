@@ -24,6 +24,9 @@ struct AppSettings {
     int render_scale = 1;    // the 3D picture at 1 to 4 times the DS's resolution
     bool hd_textures = false;    // replacement textures from the texture pack
     bool dump_textures = false;  // writes the game's textures into textures\dump
+    int volume = 100;              // percent
+    std::string mic_device;        // a recording device's name; "" Windows' default; "off" keys only
+    int mic_sensitivity = 50;      // percent: how loud counts as blowing
 };
 
 AppSettings load_settings(const std::filesystem::path& file);

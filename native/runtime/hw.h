@@ -41,6 +41,7 @@ void hw_raise(u32 flags);
 void hw_set_keys(u32 pressed);
 void hw_set_touch(bool touching, u32 x, u32 y);
 void hw_set_mic(bool blowing);  // blowing into the microphone, as one on/off input
+void hw_set_mic_level(float level);  // how loud the microphone hears: 0 silent to 1 full
 // Save memory: set at start, read to write it to a file. The flag clears when read.
 void hw_set_save(const std::vector<u8>& contents);
 const std::vector<u8>& hw_save();

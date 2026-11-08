@@ -21,6 +21,7 @@
 #include "hw.h"
 #include "launcher.h"
 #include "machine.h"
+#include "microphone.h"
 #include "net.h"
 #include "ppu.h"
 #include "sound.h"
@@ -549,8 +550,15 @@ int main(int argc, char** argv) {
     // Sound: samples are made in step with the game, and the device plays them as they come.
     const SDL_AudioSpec audio_spec{SDL_AUDIO_S16, 2, int(kSoundRate)};
     SDL_AudioStream* audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, nullptr, nullptr);
-    if (audio != nullptr) SDL_ResumeAudioStreamDevice(audio);
-    else std::printf("no sound device: %s\n", SDL_GetError());
+    if (audio != nullptr) {
+        SDL_SetAudioStreamGain(audio, float(app.volume) / 100.0f);
+        SDL_ResumeAudioStreamDevice(audio);
+    } else {
+        std::printf("no sound device: %s\n", SDL_GetError());
+    }
+    // The real microphone: loud enough counts as blowing, like Space or the left trigger.
+    Microphone microphone;
+    microphone.open(app.mic_device);
     std::vector<s16> samples;
 
     const u64 ticks_per_frame = u64(double(SDL_GetPerformanceFrequency()) / kFramesPerSecond);
@@ -598,10 +606,13 @@ int main(int argc, char** argv) {
         float touch_x = 0, touch_y = 0;
         const bool mouse_touch = (buttons & SDL_BUTTON_LMASK) && mouse_on_touch_screen(mouse_x, mouse_y, touch_x, touch_y);
         hw_set_keys(keyboard_keys() | pad_keys());
-        // Blowing into the microphone: a key, or the left trigger.
-        hw_set_mic(SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_SPACE]
-                   || (g_pad.handle != nullptr
-                       && SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000));
+        // Blowing into the microphone: the real one, a key, or the left trigger.
+        // The keys blow at full strength, the real microphone as loud as it hears.
+        microphone.update();
+        const bool blowing_key = SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_SPACE]
+                                 || (g_pad.handle != nullptr
+                                     && SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000);
+        hw_set_mic_level(blowing_key ? 1.0f : microphone.game_level(app.mic_sensitivity));
         u32 auto_x = 0, auto_y = 0;
         if (net_auto_touch(auto_x, auto_y)) hw_set_touch(true, auto_x, auto_y);  // the lobby's character
         else if (mouse_touch) hw_set_touch(true, u32(touch_x), u32(touch_y));
@@ -686,6 +697,7 @@ int main(int argc, char** argv) {
     // comes back as a new one.
     if (online) net_leave();
     if (back_to_menu) restart_with_menu(rom_path);
+    microphone.close();  // before SDL ends, or closing it later reaches into nothing
     SDL_Quit();
     return 0;
 }

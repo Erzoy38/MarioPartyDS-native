@@ -203,6 +203,7 @@ void print_watched() {
 // --input TICK:WHAT[:FRAMES], repeatable, from game tick TICK on for FRAMES ticks (default 6).
 // WHAT is a key name, MIC for blowing into the microphone, or touch;X;Y in pixels. Same script, same run: this is how tests play.
 constexpr u32 kMicBit = 1u << 16;
+float g_mic_level = 1.0f;  // --mic-level PERCENT: how loud MIC is
 
 struct ScriptedInput {
     u64 tick;
@@ -259,7 +260,7 @@ void apply_script(u64 tick) {
         y = auto_y;
     }
     hw_set_keys(keys & 0xFFF);
-    hw_set_mic(keys & kMicBit);
+    hw_set_mic_level((keys & kMicBit) ? g_mic_level : 0.0f);
     hw_set_touch(touching, x, y);
 }
 
@@ -533,6 +534,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--unlock-minigames")) g_unlock_minigames = std::atoi(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--name")) settings.player_name = argv[i + 1];
         else if (!std::strcmp(argv[i], "--language")) settings.language = u8(std::atoi(argv[i + 1]));
+        else if (!std::strcmp(argv[i], "--mic-level")) g_mic_level = float(std::atof(argv[i + 1])) / 100.0f;
         else if (!std::strcmp(argv[i], "--boot-type")) settings.boot_type = u16(std::strtoul(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--save")) settings.save = read_file(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--input")) add_input(argv[i + 1]);

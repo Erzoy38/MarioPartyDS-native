@@ -182,22 +182,25 @@ void arm7_touch(u32 data) {
 // The reply is the command with a result byte (callback at 0x0206AF68). The buffer fills as the
 // ARM7 would fill it. The input is only "blowing or not", so it can travel with the other keys.
 namespace mic {
-bool g_running = false, g_blowing = false, g_loop = false;
+bool g_running = false, g_loop = false;
+float g_level = 0;  // 0 silent to 1 as loud as the microphone goes
 u32 g_type = 0, g_buffer = 0, g_size = 0, g_position = 0, g_timer = 1, g_rest = 0, g_counter = 0;
 u32 g_words[8];
 u32 g_command = 0;
 constexpr u32 kLastAddress = 0x027FFF90, kOneSample = 0x027FFF94;
 constexpr u32 kBusCyclesPerLine = 2130;  // 33.51 MHz / 15734 lines
 
+// A wave around the middle whose height is the level: quiet sound swings a little, loud sound fully.
 void write_sample(u32 at) {
     ++g_counter;
-    const bool high = g_blowing && (g_counter & 1);
     const bool sixteen = g_type & 1;
     const bool is_signed = (g_type & 2) != 0;
+    const s32 full = sixteen ? 0x7FF0 : 0x7F;
+    const s32 swing = s32(float(full) * std::clamp(g_level, 0.0f, 1.0f));
+    const s32 sample = (g_counter & 1) ? swing : -swing;  // signed, around 0
     u32 value;
-    if (!g_blowing) value = is_signed ? 0 : (sixteen ? 0x8000 : 0x80);
-    else if (is_signed) value = high ? (sixteen ? 0x7FF0 : 0x7F) : (sixteen ? 0x8000 : 0x80);
-    else value = high ? (sixteen ? 0xFFF0 : 0xFF) : 0;
+    if (is_signed) value = u32(sample) & (sixteen ? 0xFFFFu : 0xFFu);
+    else value = u32(sample + (sixteen ? 0x8000 : 0x80));
     if (sixteen) wr16(at, u16(value));
     else wr8(at, u8(value));
 }
@@ -536,7 +539,8 @@ void hw_set_touch(bool touching, u32 x, u32 y) {
     g_touch_word = touching ? ((x << 4) | (y << 16) | (1u << 24)) : 0x06000000u;
 }
 
-void hw_set_mic(bool blowing) { mic::g_blowing = blowing; }
+void hw_set_mic(bool blowing) { mic::g_level = blowing ? 1.0f : 0.0f; }
+void hw_set_mic_level(float level) { mic::g_level = level; }
 
 void hw_set_save(const std::vector<u8>& contents) { backup::g_memory = contents; }
 

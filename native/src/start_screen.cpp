@@ -1,6 +1,7 @@
 #include "start_screen.h"
 
 #include "display.h"
+#include "microphone.h"
 #include "ui.h"
 
 #include <algorithm>
@@ -416,6 +417,7 @@ private:
         std::string* field = nullptr;     // Kind::Field: the text being edited
         size_t limit = 0;
         bool (*allowed)(char) = nullptr;
+        bool meter = false;  // shows the microphone's level instead of a value
     };
 
     static bool name_char(char c) { return c >= 0x20 && c < 0x7F; }
@@ -511,6 +513,51 @@ private:
             };
             rows.push_back(smooth);
         } else if (tab == 2) {
+            Row volume{"VOLUME", std::to_string(settings_.volume) + " %",
+                       "How loud the game is. 0 % is silent."};
+            volume.kind = Row::Kind::Choice;
+            volume.change = [this](int delta) {
+                if (delta == 0) settings_.volume = settings_.volume >= 100 ? 0 : settings_.volume + 10;
+                else settings_.volume = std::clamp(settings_.volume + delta * 10, 0, 100);
+                save();
+            };
+            rows.push_back(volume);
+            // Off, Windows' default, then every recording device that is connected now.
+            std::vector<std::string> choices{kMicOff, ""};
+            for (const std::string& name : Microphone::devices()) choices.push_back(name);
+            std::string shown = settings_.mic_device == kMicOff ? "Off (Space key only)"
+                                : settings_.mic_device.empty() ? "Windows default"
+                                                               : settings_.mic_device;
+            Row device{"MICROPHONE", shown,
+                       "Which microphone the game listens to: the PC's, a headset's or a controller's. A PS5 "
+                       "controller (DualSense) shows up here when it is connected with a USB cable; over Bluetooth "
+                       "Windows gets no sound from it. Space and the left trigger always blow at full strength."};
+            device.kind = Row::Kind::Choice;
+            device.change = [this, choices](int delta) {
+                const auto at = std::find(choices.begin(), choices.end(), settings_.mic_device);
+                const int n = int(choices.size());
+                const int i = at == choices.end() ? 1 : int(at - choices.begin());
+                settings_.mic_device = choices[size_t((i + (delta == 0 ? 1 : delta) + n) % n)];
+                save();
+            };
+            rows.push_back(device);
+            Row sensitivity{"MIC SENSITIVITY", std::to_string(settings_.mic_sensitivity) + " %",
+                            "How strongly your microphone is amplified for the game. Speak normally and set it so the bar "
+                            "below stays green: that is the game's 'perfect volume'. Orange is too quiet, red too loud."};
+            sensitivity.kind = Row::Kind::Choice;
+            sensitivity.change = [this](int delta) {
+                const int step = delta == 0 ? 10 : delta * 10;
+                int next = settings_.mic_sensitivity + step;
+                if (delta == 0 && next > 100) next = 10;
+                settings_.mic_sensitivity = std::clamp(next, 10, 100);
+                save();
+            };
+            rows.push_back(sensitivity);
+            Row level{"MIC LEVEL", "", "What the game hears, with the zones of its own microphone test: grey nothing, orange too quiet, "
+                                       "green just right, red too loud. Blowing is meant to reach red."};
+            level.meter = true;
+            rows.push_back(level);
+        } else if (tab == 3) {
             Row hd{"HD TEXTURES", settings_.hd_textures ? "On" : "Off",
                    "Texture mods: the game's 3D textures replaced by pictures from the folder \"textures\" next to "
                    "the game, for example HD textures. A pack goes into its own folder there. Best together with "
@@ -587,9 +634,26 @@ private:
         SDL_StartTextInput(window_);
     }
 
+    void update_microphone() {
+        const bool wanted = settings_open_ && tab_ == 2;
+        if (!wanted) {
+            if (mic_.is_open()) mic_.close();
+            mic_tried_ = false;
+            return;
+        }
+        if (!mic_.is_open() || mic_.device() != settings_.mic_device) {
+            if (mic_.device() != settings_.mic_device || !mic_tried_) {
+                mic_.open(settings_.mic_device);
+                mic_tried_ = true;
+            }
+        }
+        mic_.update();
+    }
+
     void draw_settings(const Input& in) {
-        static const char* const kTabs[] = {"PRELAUNCH", "VIDEO", "MODS", "ONLINE"};
-        constexpr int kTabCount = 4;
+        update_microphone();
+        static const char* const kTabs[] = {"PRELAUNCH", "VIDEO", "SOUND", "MODS", "ONLINE"};
+        constexpr int kTabCount = 5;
         const SDL_FRect panel{78, 60, 868, 458};
         ui::fill_rounded(r_, panel, 12, kPanel);
         ui::outline_rounded(r_, panel, 12, kPanelEdge);
@@ -644,6 +708,27 @@ private:
             ui::outline_rounded(r_, box, 14, focused ? Rgba{120, 205, 255, 255} : Rgba{140, 180, 255, 110});
             const TextStyle label{Font::Plain, 14, kWhite, {0, 0, 0, 0}, 0, 0.4f};
             text_.draw(row.label, box.x + 16, box.y + 6, label);
+            if (row.meter) {
+                // The level as a bar, with the mark where blowing starts.
+                // The game's own zones: nothing heard, too quiet, just right, too loud.
+                const SDL_FRect bar{box.x + box.w * 0.45f, box.y + 10, box.w * 0.55f - 16, box.h - 20};
+                ui::fill_rounded(r_, bar, 4, {255, 255, 255, 40});
+                const float lvl = mic_.game_level(settings_.mic_sensitivity);
+                const Rgba colour = lvl >= kMicLoud ? Rgba{255, 110, 90, 255}
+                                    : lvl >= kMicGood ? Rgba{90, 230, 120, 255}
+                                    : lvl >= kMicHeard ? Rgba{255, 200, 80, 255}
+                                                       : Rgba{170, 190, 220, 255};
+                if (lvl > 0.003f) ui::fill_rounded(r_, {bar.x, bar.y, bar.w * lvl, bar.h}, 4, colour);
+                for (float mark : {kMicHeard, kMicGood, kMicLoud}) {
+                    ui::fill_rounded(r_, {bar.x + bar.w * mark - 1, bar.y - 3, 2, bar.h + 6}, 1, {255, 255, 255, 200});
+                }
+                if (!mic_.is_open()) {
+                    const TextStyle off{Font::Plain, 13, {255, 255, 255, 160}};
+                    const char* const text = settings_.mic_device == kMicOff ? "microphone off" : "no microphone";
+                    text_.draw(text, bar.x + 8, bar.y - 1, off);
+                }
+                continue;
+            }
             std::string value = row.value;
             if (editing_ == int(i)) value = edit_text_ + ((SDL_GetTicks() / 400) % 2 ? "_" : " ");
             if (row.kind == Row::Kind::Choice && focused) value = "\xE2\x80\xB9  " + value + "  \xE2\x80\xBA";  // ‹ ›
@@ -720,6 +805,8 @@ private:
     std::string status_;
     bool status_is_error_ = false;
     SDL_Texture* background_ = nullptr;
+    Microphone mic_;
+    bool mic_tried_ = false;
     std::vector<SDL_Gamepad*> pads_;
     int focus_ = 0;
     After after_ = After::Nothing;

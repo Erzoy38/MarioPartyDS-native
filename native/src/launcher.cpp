@@ -364,6 +364,9 @@ AppSettings load_settings(const std::filesystem::path& file) {
         else if (key == "render_scale") settings.render_scale = std::clamp(std::atoi(value.c_str()), 1, 4);
         else if (key == "hd_textures") settings.hd_textures = value == "1";
         else if (key == "dump_textures") settings.dump_textures = value == "1";
+        else if (key == "volume") settings.volume = std::clamp(std::atoi(value.c_str()), 0, 100);
+        else if (key == "mic_device") settings.mic_device = value;
+        else if (key == "mic_sensitivity") settings.mic_sensitivity = std::clamp(std::atoi(value.c_str()), 10, 100);
     }
     return settings;
 }
@@ -374,7 +377,8 @@ void save_settings(const std::filesystem::path& file, const AppSettings& s) {
         << (s.fullscreen ? 1 : 0) << "\ncharacter=" << s.character << "\nrom=" << s.rom << "\nlanguage="
         << s.language << "\nsmooth=" << (s.smooth ? 1 : 0) << "\nresolution=" << s.resolution << "\nlayout="
         << s.layout << "\naspect=" << s.aspect << "\nrender_scale=" << s.render_scale << "\nhd_textures="
-        << (s.hd_textures ? 1 : 0) << "\ndump_textures=" << (s.dump_textures ? 1 : 0) << "\n";
+        << (s.hd_textures ? 1 : 0) << "\ndump_textures=" << (s.dump_textures ? 1 : 0) << "\nvolume=" << s.volume
+        << "\nmic_device=" << s.mic_device << "\nmic_sensitivity=" << s.mic_sensitivity << "\n";
 }
 
 std::filesystem::path known_servers_file(const std::filesystem::path& settings_file) {
