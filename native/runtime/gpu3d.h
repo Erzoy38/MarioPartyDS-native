@@ -44,5 +44,17 @@ int gpu3d_display_scale();
 int gpu3d_display_index();
 // (256 * scale) x (192 * scale), in the format of gpu3d_line. Null if not drawn.
 const u32* gpu3d_display_picture(int index);
+
+// For DLSS: the screen's picture at any size (w, h; 0, 0 back to 256 * scale x 192 * scale), and
+// a sample point moved by (x, y) of its pixels for the next list drawn. Pixel i then samples the
+// game's picture at (i + 0.5 + x) / w of its width.
+void gpu3d_set_display_size(int w, int h);
+void gpu3d_set_display_jitter(float x, float y);
+struct Gpu3dDisplayInfo {
+    int w = 0, h = 0;
+    float jitter_x = 0, jitter_y = 0;  // what this picture was drawn with
+    const float* depth = nullptr;      // w x h, 0 near to 1 far; only with a free size
+};
+bool gpu3d_display_info(int index, Gpu3dDisplayInfo& info);
 const Gpu3dStats& gpu3d_stats();
 void gpu3d_print_last_list();  // for finding out why a scene looks wrong

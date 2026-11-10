@@ -392,6 +392,10 @@ void parallel_rows(int count, Body body) {
 // that. Index y * w + x.
 struct Target {
     int scale = 1, w = kWidth, h = kHeight;
+    // Any other size (for DLSS): pixel centres spread evenly, the sample point moved by `jitter`
+    // pixels of this picture. `free_size` is false for the game's own and the plain scales.
+    bool free_size = false;
+    float jitter_x = 0, jitter_y = 0;
     std::vector<float> depth;
     std::vector<u32> color;  // 6 bits per channel in 0-17, alpha in 18-22
     std::vector<u8> id;      // polygon id of the opaque pixel
@@ -401,8 +405,17 @@ struct Target {
 
     void resize(int s) {
         scale = s;
-        w = kWidth * s;
-        h = kHeight * s;
+        free_size = false;
+        allocate(kWidth * s, kHeight * s);
+    }
+    void resize_free(int width, int height) {
+        scale = 0;
+        free_size = true;
+        allocate(width, height);
+    }
+    void allocate(int width, int height) {
+        w = width;
+        h = height;
         const size_t n = size_t(w) * size_t(h);
         depth.assign(n, 0);
         color.assign(n, 0);
@@ -430,7 +443,11 @@ int g_display_scale = 1;
 bool g_display_replace = false, g_display_dump = false;
 Gpu3dTextureHooks g_hooks{};
 Target g_display;
+int g_display_free_w = 0, g_display_free_h = 0;  // 0: 256 * scale x 192 * scale
+float g_next_jitter_x = 0, g_next_jitter_y = 0;
 std::vector<u32> g_display_picture[2];
+std::vector<float> g_display_depth[2];  // only with a free size
+Gpu3dDisplayInfo g_display_info[2];
 int g_display_index = 0;
 bool g_display_drawn = false;
 std::unordered_map<u64, std::shared_ptr<Replacement>> g_replacements;  // null: no file for it
@@ -655,7 +672,15 @@ void shade(const Polygon& p, float r, float g, float b, float s, float t, u32 po
 
 void draw_triangle(const Polygon& p, Vertex a, Vertex b, Vertex c, u32 disp, bool w_mode, Target& target,
                    const Replacement* replacement, int row_first, int row_last) {
-    if (target.scale != 1) {
+    if (target.free_size) {
+        // Pixel i of this picture samples the game's picture at ((i + 0.5 + jitter) / w) of its
+        // width, so the centres are even across the whole picture, as DLSS expects them.
+        const float kx = float(target.w) / float(kWidth), ky = float(target.h) / float(kHeight);
+        for (Vertex* v : {&a, &b, &c}) {
+            v->x = (v->x + 0.5f) * kx - 0.5f - target.jitter_x;
+            v->y = (v->y + 0.5f) * ky - 0.5f - target.jitter_y;
+        }
+    } else if (target.scale != 1) {
         const float k = float(target.scale);
         // Pixel centres stay where the game's picture has them: pixel x of the game is pixel x * k.
         for (Vertex* v : {&a, &b, &c}) {
@@ -967,13 +992,30 @@ void draw_list() {
     ++g_stats.lists_drawn;
 
     // The screen's picture, only for showing; it never goes back into the game.
-    const bool display = g_display_scale > 1 || g_display_replace;
+    const bool free_size = g_display_free_w > 0 && g_display_free_h > 0;
+    const bool display = free_size || g_display_scale > 1 || g_display_replace;
     const auto textures = prepare_textures(disp);
     if (!display) return;
-    if (g_display.scale != g_display_scale || g_display.color.empty()) g_display.resize(g_display_scale);
+    if (free_size) {
+        if (!g_display.free_size || g_display.w != g_display_free_w || g_display.h != g_display_free_h) {
+            g_display.resize_free(g_display_free_w, g_display_free_h);
+        }
+        g_display.jitter_x = g_next_jitter_x;
+        g_display.jitter_y = g_next_jitter_y;
+    } else if (g_display.free_size || g_display.scale != g_display_scale || g_display.color.empty()) {
+        g_display.resize(g_display_scale);
+    }
     draw_into(g_display, order, disp, w_mode, &textures, true);
     const int next = g_display_index ^ 1;
     g_display_picture[next] = g_display.color;
+    if (free_size) g_display_depth[next] = g_display.depth;
+    else g_display_depth[next].clear();
+    Gpu3dDisplayInfo& info = g_display_info[next];
+    info.w = g_display.w;
+    info.h = g_display.h;
+    info.jitter_x = free_size ? g_display.jitter_x : 0.0f;
+    info.jitter_y = free_size ? g_display.jitter_y : 0.0f;
+    info.depth = g_display_depth[next].empty() ? nullptr : g_display_depth[next].data();
     g_display_index = next;
     g_display_drawn = true;
 }
@@ -1329,6 +1371,23 @@ int gpu3d_display_index() { return g_display_drawn ? g_display_index : -1; }
 const u32* gpu3d_display_picture(int index) {
     if (index < 0 || index > 1 || g_display_picture[index].empty()) return nullptr;
     return g_display_picture[index].data();
+}
+
+void gpu3d_set_display_size(int w, int h) {
+    g_display_free_w = std::max(0, w);
+    g_display_free_h = std::max(0, h);
+    g_display_drawn = false;
+}
+
+void gpu3d_set_display_jitter(float x, float y) {
+    g_next_jitter_x = x;
+    g_next_jitter_y = y;
+}
+
+bool gpu3d_display_info(int index, Gpu3dDisplayInfo& info) {
+    if (index < 0 || index > 1 || g_display_picture[index].empty()) return false;
+    info = g_display_info[index];
+    return true;
 }
 
 const Gpu3dStats& gpu3d_stats() { return g_stats; }

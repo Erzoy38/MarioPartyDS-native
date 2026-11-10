@@ -228,6 +228,16 @@ SDL_FRect g_touch_rect{};   // where the touch screen is shown
 SDL_Texture* g_texture_3d = nullptr;  // null: the frame alone, as one picture
 Ppu3dPlacement g_placement{};
 bool g_has_3d = false;
+std::string g_grab;  // --grab FILE.bmp
+std::vector<std::pair<long long, u32>> g_presses;  // --press FRAME:KEY
+
+u32 scripted_keys(long long frame) {
+    u32 keys = 0;
+    for (const auto& [at, mask] : g_presses) {
+        if (frame >= at && frame < at + 6) keys |= mask;
+    }
+    return keys;
+}
 
 // One DS screen at `place`: the frame below, the 3D picture, the frame's 2D parts on top.
 void draw_screen_layers(const SDL_FRect& frame_part, int screen, const SDL_FRect& place) {
@@ -449,6 +459,18 @@ int main(int argc, char** argv) {
         else if (arg == "--frames" && i + 1 < argc) frame_limit = std::atoll(argv[++i]);
         else if (arg == "--save" && i + 1 < argc) save_arg = argv[++i];
         else if (arg == "--screenshot" && i + 1 < argc) screenshot = argv[++i];
+        else if (arg == "--grab" && i + 1 < argc) g_grab = argv[++i];
+        else if (arg == "--press" && i + 1 < argc) {  // FRAME:KEY, the key held for 6 frames (tests)
+            static const char* const kNames[] = {"A", "B", "SELECT", "START", "RIGHT", "LEFT",
+                                                 "UP", "DOWN", "R", "L", "X", "Y"};
+            long long at = 0;
+            char what[16] = {};
+            if (std::sscanf(argv[++i], "%lld:%15s", &at, what) == 2) {
+                for (u32 k = 0; k < 12; ++k) {
+                    if (!std::strcmp(what, kNames[k])) g_presses.push_back({at, 1u << k});
+                }
+            }
+        }
         else if (arg == "--settings" && i + 1 < argc) settings_arg = argv[++i];
         else if (arg == "--cpu-compose") cpu_compose = true;
         else if (arg == "--compare-compose" && i + 1 < argc) compare_every = std::atoi(argv[++i]);
@@ -661,6 +683,29 @@ int main(int argc, char** argv) {
         SDL_SetTextureBlendMode(g_texture_3d, SDL_BLENDMODE_BLEND);
         SDL_SetTextureScaleMode(g_texture_3d, app.smooth ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
     }
+    // NVIDIA DLSS: the 3D is drawn at DLSS's smaller size with a moving sample point, and DLSS makes
+    // it the 3D resolution again. If anything of it fails, the 3D picture stays as before.
+    bool use_dlss = false;
+    int dlss_in_w = 0, dlss_in_h = 0;
+    const int dlss_out_w = kScreenWidth * std::clamp(app.render_scale, 1, 12);
+    const int dlss_out_h = kScreenHeight * std::clamp(app.render_scale, 1, 12);
+    if (g_texture_3d != nullptr && app.dlss != kDlssOff && dlss_available()) {
+        unsigned w = 0, h = 0;
+        if (dlss_render_size(app.dlss, unsigned(dlss_out_w), unsigned(dlss_out_h), w, h)) {
+            SDL_Texture* out = dlss_begin(renderer, app.dlss, int(w), int(h), dlss_out_w, dlss_out_h);
+            if (out != nullptr) {
+                SDL_DestroyTexture(g_texture_3d);
+                g_texture_3d = out;
+                SDL_SetTextureBlendMode(g_texture_3d, SDL_BLENDMODE_BLEND);
+                SDL_SetTextureScaleMode(g_texture_3d, app.smooth ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+                dlss_in_w = int(w);
+                dlss_in_h = int(h);
+                gpu3d_set_display_size(dlss_in_w, dlss_in_h);
+                use_dlss = true;
+            }
+        }
+        if (!use_dlss) std::printf("dlss: not used: %s\n", dlss_reason().c_str());
+    }
     if (cpu_compose && display_picture) {  // the old way, for comparing: everything at the 3D resolution
         SDL_DestroyTexture(texture);
         texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, kWidth * app.render_scale,
@@ -779,7 +824,7 @@ int main(int argc, char** argv) {
         const SDL_MouseButtonFlags buttons = SDL_GetMouseState(&mouse_x, &mouse_y);
         float touch_x = 0, touch_y = 0;
         const bool mouse_touch = (buttons & SDL_BUTTON_LMASK) && mouse_on_touch_screen(mouse_x, mouse_y, touch_x, touch_y);
-        hw_set_keys(keyboard_keys() | pad_keys());
+        hw_set_keys(keyboard_keys() | pad_keys() | scripted_keys(frames));
         // Blowing into the microphone: the real one, a key, or the left trigger.
         // The keys blow at full strength, the real microphone as loud as it hears.
         microphone.update();
@@ -797,6 +842,11 @@ int main(int argc, char** argv) {
             hw_set_touch(false, 0, 0);
         }
 
+        if (use_dlss) {  // the sample point for the 3D drawn in this frame
+            float jx = 0, jy = 0;
+            dlss_jitter(frames, dlss_in_w, dlss_out_w, jx, jy);
+            gpu3d_set_display_jitter(jx, jy);
+        }
         machine_run_frame();
         ++frames;
         std::fflush(stdout);  // the log stays complete if the program ends unexpectedly
@@ -853,10 +903,22 @@ int main(int argc, char** argv) {
             if (display_picture && g_texture_3d != nullptr) {
                 // The graphics card puts it together: the frame (masked where only 3D shows) and
                 // the 3D picture.
-                int s3 = 1;
-                g_has_3d = ppu_3d_layer(layer_3d, s3);
+                Gpu3dDisplayInfo info;
+                const int last_screen = g_has_3d ? g_placement.screen : -1;
+                g_has_3d = ppu_3d_layer(layer_3d, info);
                 g_placement = ppu_3d_placement();
-                if (g_has_3d) SDL_UpdateTexture(g_texture_3d, nullptr, layer_3d.data(), kScreenWidth * s3 * 4);
+                if (g_has_3d && use_dlss) {
+                    // DLSS starts afresh where the 3D comes back or moves to the other screen.
+                    DlssFrame f;
+                    f.rgba = layer_3d.data();
+                    f.depth = info.depth;
+                    f.jitter_x = info.jitter_x;
+                    f.jitter_y = info.jitter_y;
+                    f.reset = last_screen != g_placement.screen;
+                    g_has_3d = info.w == dlss_in_w && info.h == dlss_in_h && dlss_evaluate(renderer, f);
+                } else if (g_has_3d) {
+                    SDL_UpdateTexture(g_texture_3d, nullptr, layer_3d.data(), info.w * 4);
+                }
                 if (upscaling) shown = upscaled;
                 else shown.assign(ppu_frame(), ppu_frame() + picture.size());
                 mask_pure_3d(shown, shown_scale);
@@ -880,6 +942,12 @@ int main(int argc, char** argv) {
                 SDL_UpdateTexture(texture, nullptr, picture.data(), kWidth * 4);
             }
             draw_screens();
+            if (!g_grab.empty() && frames == frame_limit) {  // --grab: the window's last picture, for checking
+                if (SDL_Surface* read = SDL_RenderReadPixels(renderer, nullptr)) {
+                    SDL_SaveBMP(read, g_grab.c_str());
+                    SDL_DestroySurface(read);
+                }
+            }
             if (asking_to_leave) draw_question(renderer, "Zurück zum Hauptmenü?", "Enter: ja    Esc: nein");
             SDL_RenderPresent(renderer);
         }

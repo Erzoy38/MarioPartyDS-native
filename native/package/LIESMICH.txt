@@ -39,8 +39,10 @@ Erster Start
               Bildschirme (übereinander, nebeneinander, Hybrid), Bildformat (4:3, 16:9, Widescreen),
               3D-Auflösung (1x bis 11x = 4K, schärfere 3D-Grafik), Bildrate (30, 60 oder 120/144/240 Hz
               im Takt des Monitors), Hochskalierung der 2D-Grafik (glatte Kanten oder AMD FSR 1),
-              NVIDIA DLSS (nur mit NVIDIA-RTX-Karte; wird in dieser Version erkannt und gespeichert,
-              das Bild nutzt es ab dem nächsten Update)
+              NVIDIA DLSS (nur mit NVIDIA-RTX-Karte und 3D-Auflösung über 1x: das 3D wird kleiner
+              gezeichnet und von der Grafikkarte wieder scharf gemacht, deutlich schneller bei hoher
+              3D-Auflösung; DLAA glättet nur die Kanten. Schnelle Bewegungen können noch kurz
+              nachziehen, Bewegungsdaten für DLSS folgen in einem späteren Update)
    SOUND      Lautstärke, welches Mikrofon (PC, Headset, PS5-Controller per USB-Kabel),
               Mikrofon-Empfindlichkeit, Pegelanzeige zum Ausprobieren
    CHEATS     alle Minispiele und alle Spielbretter freischalten (wird mit dem Spielstand

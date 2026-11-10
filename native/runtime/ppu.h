@@ -3,6 +3,7 @@
 #pragma once
 
 #include "cpu.h"
+#include "gpu3d.h"
 
 #include <vector>
 
@@ -34,9 +35,9 @@ struct Ppu3dPlacement {
     u32 scroll = 0;
 };
 Ppu3dPlacement ppu_3d_placement();
-// The screen's 3D picture of the last frame as RGBA, (256 x 192) times `scale`, with the master
-// brightness of each line applied; alpha 255 where it has something, 0 elsewhere. False if none.
-bool ppu_3d_layer(std::vector<u8>& out, int& scale);
+// The screen's 3D picture of the last frame as RGBA, info.w x info.h, with the master brightness of
+// each line applied; alpha 255 where it has something, 0 elsewhere. False if none.
+bool ppu_3d_layer(std::vector<u8>& out, Gpu3dDisplayInfo& info);
 
 // How many lines used 3D and display capture, so a test can tell what it actually exercised.
 struct PpuGaps {

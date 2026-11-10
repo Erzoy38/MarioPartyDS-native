@@ -686,16 +686,15 @@ const u16* ppu_frame_map() { return g_map_front; }
 
 Ppu3dPlacement ppu_3d_placement() { return {g_3d_screen_front, g_3d_scroll_front}; }
 
-bool ppu_3d_layer(std::vector<u8>& out, int& scale) {
-    scale = gpu3d_display_scale();
+bool ppu_3d_layer(std::vector<u8>& out, Gpu3dDisplayInfo& info) {
     const u32* picture = gpu3d_display_picture(g_display_front);
-    if (picture == nullptr || g_3d_screen_front < 0) return false;
-    const int s = scale;
-    const size_t w = size_t(kScreenWidth) * size_t(s), h = size_t(kScreenHeight) * size_t(s);
+    if (picture == nullptr || g_3d_screen_front < 0 || !gpu3d_display_info(g_display_front, info)) return false;
+    const size_t w = size_t(info.w), h = size_t(info.h);
     out.resize(w * h * 4);
     const auto rows = [&](size_t first, size_t last) {
         for (size_t y = first; y < last; ++y) {
-            const u32 master = g_master_front[size_t(g_3d_screen_front) * kScreenHeight + y / size_t(s)];
+            const size_t line = std::min(size_t(kScreenHeight - 1), y * size_t(kScreenHeight) / h);
+            const u32 master = g_master_front[size_t(g_3d_screen_front) * kScreenHeight + line];
             const u32 mode = master >> 5, factor = master & 31;
             const u32* in = picture + y * w;
             u8* o = &out[y * w * 4];
@@ -729,6 +728,10 @@ bool ppu_3d_layer(std::vector<u8>& out, int& scale) {
 bool ppu_compose_display(std::vector<u8>& out, int& scale, const u8* upscaled) {
     scale = gpu3d_display_scale();
     const u32* picture = gpu3d_display_picture(g_display_front);
+    Gpu3dDisplayInfo info;
+    if (picture != nullptr && (!gpu3d_display_info(g_display_front, info) || info.w != kScreenWidth * scale)) {
+        picture = nullptr;  // a free size (DLSS) is only for the graphics card's way
+    }
     const int s = scale;
     const size_t out_w = size_t(kScreenWidth) * size_t(s);
     out.resize(out_w * size_t(kScreenHeight * 2) * size_t(s) * 4);
