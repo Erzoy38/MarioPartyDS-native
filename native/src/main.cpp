@@ -781,6 +781,7 @@ int main(int argc, char** argv) {
     std::vector<u8> upscale_work, upscale_source(picture.size());  // the upscaler's own, while it runs
     std::future<void> upscale_job;
     std::vector<u8> layer_3d;  // the 3D picture for the graphics card
+    u64 dlss_serial = ~0ull;   // the list DLSS was last given
 
     while (running && frame_limit != frames) {
         SDL_Event event;
@@ -908,14 +909,32 @@ int main(int argc, char** argv) {
                 g_has_3d = ppu_3d_layer(layer_3d, info);
                 g_placement = ppu_3d_placement();
                 if (g_has_3d && use_dlss) {
-                    // DLSS starts afresh where the 3D comes back or moves to the other screen.
-                    DlssFrame f;
-                    f.rgba = layer_3d.data();
-                    f.depth = info.depth;
-                    f.jitter_x = info.jitter_x;
-                    f.jitter_y = info.jitter_y;
-                    f.reset = last_screen != g_placement.screen;
-                    g_has_3d = info.w == dlss_in_w && info.h == dlss_in_h && dlss_evaluate(renderer, f);
+                    // DLSS starts afresh where the 3D comes back or moves to the other screen. A
+                    // picture shown again is not given twice: its motion is that of the first time.
+                    const bool reset = last_screen != g_placement.screen;
+                    if (info.serial != dlss_serial || reset) {
+                        DlssFrame f;
+                        f.rgba = layer_3d.data();
+                        f.depth = info.depth;
+                        f.motion = info.motion;
+                        f.fresh = info.fresh;
+                        f.jitter_x = info.jitter_x;
+                        f.jitter_y = info.jitter_y;
+                        f.reset = reset;
+                        static const bool report = std::getenv("MPDS_MOTION_STATS") != nullptr;
+                        static double eval_ms = 0;
+                        static int evals = 0;
+                        const Uint64 t0 = SDL_GetPerformanceCounter();
+                        g_has_3d = info.w == dlss_in_w && info.h == dlss_in_h && dlss_evaluate(renderer, f);
+                        if (report) {
+                            eval_ms += double(SDL_GetPerformanceCounter() - t0) * 1000.0 / double(SDL_GetPerformanceFrequency());
+                            if (++evals % 60 == 0) {
+                                std::printf("timing: dlss upload and evaluate %.2f ms\n", eval_ms / 60);
+                                eval_ms = 0;
+                            }
+                        }
+                        dlss_serial = g_has_3d ? info.serial : ~0ull;
+                    }
                 } else if (g_has_3d) {
                     SDL_UpdateTexture(g_texture_3d, nullptr, layer_3d.data(), info.w * 4);
                 }

@@ -54,6 +54,11 @@ struct Gpu3dDisplayInfo {
     int w = 0, h = 0;
     float jitter_x = 0, jitter_y = 0;  // what this picture was drawn with
     const float* depth = nullptr;      // w x h, 0 near to 1 far; only with a free size
+    // w x h pairs (dx, dy) in these pixels: where the pixel's surface was in the list before (found
+    // by matching polygons; 0, 0 where unknown). Only with a free size.
+    const float* motion = nullptr;
+    const u8* fresh = nullptr;  // w x h: 255 where the surface's polygon had none before it
+    u64 serial = 0;  // which list this is; the same number means the same picture
 };
 bool gpu3d_display_info(int index, Gpu3dDisplayInfo& info);
 const Gpu3dStats& gpu3d_stats();

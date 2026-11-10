@@ -568,7 +568,7 @@ private:
                          ? "NVIDIA DLSS on this card: the 3D graphics drawn smaller and made sharp again by the card's AI "
                            "cores, for more speed (Quality to Ultra Performance), or DLAA for smoother edges at full "
                            "size. The numbers show the size drawn and the 3D RESOLUTION it becomes (set that above 1x). "
-                           "Fast movement can still leave short trails; motion data for DLSS comes in a later update."
+                           "Movement is found by matching the game's polygons from picture to picture."
                          : "NVIDIA DLSS needs an NVIDIA RTX graphics card, a current driver and nvngx_dlss.dll next to "
                            "the game. Here: " + dlss_reason()};
             if (dlss_available()) {

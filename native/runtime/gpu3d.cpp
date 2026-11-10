@@ -5,6 +5,7 @@
 #include "memory.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -402,16 +403,22 @@ struct Target {
     std::vector<s16> translucent_id;
     std::vector<u8> fog;
     std::vector<u8> stencil;
+    std::vector<float> motion;  // free size only: (dx, dy) per pixel to where it was a picture ago
+    std::vector<u8> fresh;      // free size only: 255 where the surface has nothing before it
 
     void resize(int s) {
         scale = s;
         free_size = false;
         allocate(kWidth * s, kHeight * s);
+        motion.clear();
+        fresh.clear();
     }
     void resize_free(int width, int height) {
         scale = 0;
         free_size = true;
         allocate(width, height);
+        motion.assign(size_t(w) * size_t(h) * 2, 0.0f);
+        fresh.assign(size_t(w) * size_t(h), 0);
     }
     void allocate(int width, int height) {
         w = width;
@@ -447,6 +454,8 @@ int g_display_free_w = 0, g_display_free_h = 0;  // 0: 256 * scale x 192 * scale
 float g_next_jitter_x = 0, g_next_jitter_y = 0;
 std::vector<u32> g_display_picture[2];
 std::vector<float> g_display_depth[2];  // only with a free size
+std::vector<float> g_display_motion[2];
+std::vector<u8> g_display_fresh[2];
 Gpu3dDisplayInfo g_display_info[2];
 int g_display_index = 0;
 bool g_display_drawn = false;
@@ -671,7 +680,16 @@ void shade(const Polygon& p, float r, float g, float b, float s, float t, u32 po
 }
 
 void draw_triangle(const Polygon& p, Vertex a, Vertex b, Vertex c, u32 disp, bool w_mode, Target& target,
-                   const Replacement* replacement, int row_first, int row_last) {
+                   const Replacement* replacement, int row_first, int row_last, const float* const* motion = nullptr) {
+    // Motion per corner in this picture's pixels (DS pixels times its scale); none: still.
+    const bool keep_motion = !target.motion.empty();
+    float ma[2] = {0, 0}, mb[2] = {0, 0}, mc[2] = {0, 0};
+    if (keep_motion && motion != nullptr) {
+        const float kx = float(target.w) / float(kWidth), ky = float(target.h) / float(kHeight);
+        ma[0] = motion[0][0] * kx, ma[1] = motion[0][1] * ky;
+        mb[0] = motion[1][0] * kx, mb[1] = motion[1][1] * ky;
+        mc[0] = motion[2][0] * kx, mc[1] = motion[2][1] * ky;
+    }
     if (target.free_size) {
         // Pixel i of this picture samples the game's picture at ((i + 0.5 + jitter) / w) of its
         // width, so the centres are even across the whole picture, as DLSS expects them.
@@ -763,16 +781,31 @@ void draw_triangle(const Polygon& p, Vertex a, Vertex b, Vertex c, u32 disp, boo
             if (alpha == 0) continue;
             if (alpha_test && alpha <= alpha_ref) continue;
 
+            const auto write_motion = [&] {
+                if (!keep_motion) return;
+                float* m = &target.motion[at * 2];
+                // A polygon without one before it (new, or its texture changed): DLSS should
+                // follow this picture there rather than the ones before.
+                target.fresh[at] = motion == nullptr ? 255 : 0;
+                if (motion == nullptr) {
+                    m[0] = m[1] = 0;
+                    return;
+                }
+                m[0] = (l0 * ma[0] * wa + l1 * mb[0] * wb + l2 * mc[0] * wc) * w;
+                m[1] = (l0 * ma[1] * wa + l1 * mb[1] * wb + l2 * mc[1] * wc) * w;
+            };
             if (alpha == 31) {
                 target.color[at] = color | (31u << 18);
                 buffered = depth;
                 target.id[at] = u8(id);
                 target.fog[at] = fog;
+                write_motion();
             } else {
                 if (target.translucent_id[at] == s16(id)) continue;  // same id does not overlap
                 target.translucent_id[at] = s16(id);
                 const u32 under = target.color[at];
                 const u32 under_alpha = (under >> 18) & 31;
+                if (under_alpha == 0) write_motion();  // nothing below: this one is what moves
                 if (blend && under_alpha != 0) {
                     target.color[at] = mix18(color, under & 0x3FFFF, alpha) | (std::max(alpha, under_alpha) << 18);
                 } else {
@@ -929,6 +962,8 @@ void clear_target(Target& t) {
     std::fill(t.translucent_id.begin(), t.translucent_id.end(), s16(-1));
     std::fill(t.fog.begin(), t.fog.end(), u8(clear_fog));
     std::fill(t.stencil.begin(), t.stencil.end(), u8(0));
+    std::fill(t.motion.begin(), t.motion.end(), 0.0f);
+    std::fill(t.fresh.begin(), t.fresh.end(), u8(0));
 }
 
 // Opaque first; translucent afterwards, top of the screen first unless the game keeps order.
@@ -953,8 +988,104 @@ std::vector<const Polygon*> drawing_order(bool manual_sort) {
 
 // The game's own picture is drawn on one core; the screen's in bands of rows on all of them. Each
 // band sees every polygon in the same order, so the result is the same as on one core.
+// --- Motion of the polygons, for DLSS ---
+// The game sends no motion, so each polygon is matched with one of the last list: the n-th polygon
+// with the same look (attributes without alpha, texture, palette) to the n-th of the last list. Its
+// corners' movement is then known if both have as many corners and none moved too far.
+struct PolygonLook {
+    u64 key;
+    std::vector<float> xy;  // corners in DS pixels
+};
+std::vector<PolygonLook> g_last_looks;
+
+// What a texture holds now (texels and palette): a counter that changes its digits in place has
+// the same fields but other contents, so it counts as a different look.
+u64 texture_content(u32 param, u32 pal_base) {
+    const u32 format = (param >> 26) & 7;
+    if (format == 0) return 0;
+    static const u32 kBits[8] = {0, 8, 2, 4, 8, 2, 8, 16};
+    const u32 w = 8u << ((param >> 20) & 7), h = 8u << ((param >> 23) & 7);
+    const u32 address = (param & 0xFFFF) << 3;
+    const u32 bytes = w * h * kBits[format] / 8;
+    u64 hash = 0xCBF29CE484222325ull;
+    const u8* slot = vram_texture_slot(address >> 17);
+    const u32 offset = address & 0x1FFFF;
+    if (slot != nullptr && offset + bytes <= 0x20000) {
+        for (u32 i = 0; i + 8 <= bytes; i += 8) {
+            u64 v;
+            std::memcpy(&v, slot + offset + i, 8);
+            hash = (hash ^ v) * 0x100000001B3ull;
+        }
+    } else {
+        for (u32 i = 0; i < bytes; ++i) hash = (hash ^ tex8(address + i)) * 0x100000001B3ull;
+    }
+    static const u32 kColors[8] = {0, 32, 4, 16, 256, 4, 8, 0};
+    const u32 pal_address = format == 2 ? pal_base * 8 : pal_base * 16;
+    for (u32 i = 0; i < kColors[format]; ++i) hash = (hash ^ pal16(pal_address + i * 2)) * 0x100000001B3ull;
+    return hash;
+}
+
+u64 polygon_look(const Polygon& p, std::unordered_map<u64, u64>& contents) {
+    const u64 fields = (u64(p.tex_param) << 32) | p.pal_base;
+    auto found = contents.find(fields);
+    if (found == contents.end()) found = contents.emplace(fields, texture_content(p.tex_param, p.pal_base)).first;
+    return (u64(p.attr & ~(31u << 16)) * 0x9E3779B97F4A7C15ull) ^ fields ^ (found->second * 0xC2B2AE3D27D4EB4Full);
+}
+
+// Per polygon of g_ready: (dx, dy) per corner from now to the last list, or empty if unknown.
+std::vector<std::vector<float>> match_motion() {
+    std::unordered_map<u64, std::vector<size_t>> last_by_key;
+    for (size_t i = 0; i < g_last_looks.size(); ++i) last_by_key[g_last_looks[i].key].push_back(i);
+    std::unordered_map<u64, size_t> used;
+    std::vector<std::vector<float>> motion(g_ready.size());
+    std::vector<PolygonLook> looks(g_ready.size());
+    std::unordered_map<u64, u64> contents;  // texture fields to what they hold, once per list
+    constexpr float kTooFar = 48.0f;  // DS pixels in one picture: a jump, not a movement
+    for (size_t k = 0; k < g_ready.size(); ++k) {
+        const Polygon& p = g_ready[k];
+        PolygonLook& look = looks[k];
+        look.key = polygon_look(p, contents);
+        look.xy.reserve(p.vertices.size() * 2);
+        for (const Vertex& v : p.vertices) {
+            look.xy.push_back(v.x);
+            look.xy.push_back(v.y);
+        }
+        const auto found = last_by_key.find(look.key);
+        if (found == last_by_key.end()) continue;
+        size_t& n = used[look.key];
+        if (n >= found->second.size()) continue;
+        const PolygonLook& last = g_last_looks[found->second[n++]];
+        if (last.xy.size() != look.xy.size()) continue;
+        std::vector<float> d(look.xy.size());
+        bool near = true;
+        for (size_t i = 0; i < d.size(); ++i) {
+            d[i] = last.xy[i] - look.xy[i];
+            near = near && std::fabs(d[i]) <= kTooFar;
+        }
+        if (near) motion[k] = std::move(d);
+    }
+    static const bool report = std::getenv("MPDS_MOTION_STATS") != nullptr;  // for checking the matching
+    if (report && g_stats.lists_drawn % 60 == 0) {
+        size_t matched = 0, moving = 0;
+        float largest = 0;
+        for (const auto& m : motion) {
+            if (m.empty()) continue;
+            ++matched;
+            float most = 0;
+            for (float v : m) most = std::max(most, std::fabs(v));
+            if (most > 0.01f) ++moving;
+            largest = std::max(largest, most);
+        }
+        std::printf("motion: list %llu, %zu polygons, %zu matched, %zu moving, largest %.2f px\n",
+                    (unsigned long long)g_stats.lists_drawn, motion.size(), matched, moving, largest);
+    }
+    g_last_looks = std::move(looks);
+    return motion;
+}
+
 void draw_into(Target& t, const std::vector<const Polygon*>& order, u32 disp, bool w_mode,
-               const std::unordered_map<u64, const Replacement*>* textures, bool parallel) {
+               const std::unordered_map<u64, const Replacement*>* textures, bool parallel,
+               const std::vector<std::vector<float>>* motion = nullptr) {
     clear_target(t);
     std::vector<const Replacement*> replacements(order.size(), nullptr);
     if (textures != nullptr && !textures->empty()) {
@@ -968,9 +1099,16 @@ void draw_into(Target& t, const std::vector<const Polygon*>& order, u32 disp, bo
     const auto rows = [&](int first, int last) {
         for (size_t k = 0; k < order.size(); ++k) {
             const Polygon* p = order[k];
+            const std::vector<float>* m = nullptr;
+            if (motion != nullptr) {
+                const std::vector<float>& found = (*motion)[size_t(p - g_ready.data())];
+                if (!found.empty()) m = &found;
+            }
             for (std::size_t i = 1; i + 1 < p->vertices.size(); ++i) {
+                const float* corners[3] = {nullptr, nullptr, nullptr};
+                if (m != nullptr) corners[0] = &(*m)[0], corners[1] = &(*m)[i * 2], corners[2] = &(*m)[(i + 1) * 2];
                 draw_triangle(*p, p->vertices[0], p->vertices[i], p->vertices[i + 1], disp, w_mode, t, replacements[k],
-                              first, last);
+                              first, last, m != nullptr ? corners : nullptr);
             }
         }
     };
@@ -1005,17 +1143,49 @@ void draw_list() {
     } else if (g_display.free_size || g_display.scale != g_display_scale || g_display.color.empty()) {
         g_display.resize(g_display_scale);
     }
-    draw_into(g_display, order, disp, w_mode, &textures, true);
+    static const bool report = std::getenv("MPDS_MOTION_STATS") != nullptr;
+    static double match_ms = 0, draw_ms = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<std::vector<float>> motion;
+    if (free_size) motion = match_motion();
+    const auto t1 = std::chrono::steady_clock::now();
+    draw_into(g_display, order, disp, w_mode, &textures, true, free_size ? &motion : nullptr);
+    if (report) {
+        const auto t2 = std::chrono::steady_clock::now();
+        match_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        draw_ms += std::chrono::duration<double, std::milli>(t2 - t1).count();
+        if (g_stats.lists_drawn % 60 == 0) {
+            std::printf("timing: matching %.2f ms, drawing %.2f ms per list\n", match_ms / 60, draw_ms / 60);
+            match_ms = draw_ms = 0;
+        }
+    }
     const int next = g_display_index ^ 1;
-    g_display_picture[next] = g_display.color;
-    if (free_size) g_display_depth[next] = g_display.depth;
-    else g_display_depth[next].clear();
+    // The finished buffers change places with the ones of two pictures ago instead of being copied;
+    // the target gets those back (cleared before the next list, made the right size here).
+    const auto hand_over = [](auto& picture, auto& buffer, size_t size) {
+        picture.swap(buffer);
+        if (buffer.size() != size) buffer.resize(size);
+    };
+    const size_t n = size_t(g_display.w) * size_t(g_display.h);
+    hand_over(g_display_picture[next], g_display.color, n);
+    if (free_size) {
+        hand_over(g_display_depth[next], g_display.depth, n);
+        hand_over(g_display_motion[next], g_display.motion, n * 2);
+        hand_over(g_display_fresh[next], g_display.fresh, n);
+    } else {
+        g_display_depth[next].clear();
+        g_display_motion[next].clear();
+        g_display_fresh[next].clear();
+    }
     Gpu3dDisplayInfo& info = g_display_info[next];
     info.w = g_display.w;
     info.h = g_display.h;
     info.jitter_x = free_size ? g_display.jitter_x : 0.0f;
     info.jitter_y = free_size ? g_display.jitter_y : 0.0f;
     info.depth = g_display_depth[next].empty() ? nullptr : g_display_depth[next].data();
+    info.motion = g_display_motion[next].empty() ? nullptr : g_display_motion[next].data();
+    info.fresh = g_display_fresh[next].empty() ? nullptr : g_display_fresh[next].data();
+    info.serial = g_stats.lists_drawn;
     g_display_index = next;
     g_display_drawn = true;
 }

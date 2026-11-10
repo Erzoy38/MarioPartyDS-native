@@ -35,10 +35,14 @@ void dlss_end();  // frees the feature and its textures (also done by dlss_stop)
 
 // One picture: RGBA and depth (0 near to 1 far) at the input size, drawn with the sample point
 // moved by (jitter_x, jitter_y) input pixels. `reset`: nothing of the last pictures is to be kept.
-// Motion vectors are none yet (everything counts as still).
+// `motion` (may be null: all still): per input pixel (dx, dy) in input pixels to where it was in the
+// picture before.
 struct DlssFrame {
     const unsigned char* rgba = nullptr;
     const float* depth = nullptr;
+    const float* motion = nullptr;
+    // May be null: per input pixel 255 where the picture is new (nothing before it to follow), else 0.
+    const unsigned char* fresh = nullptr;
     float jitter_x = 0, jitter_y = 0;
     bool reset = false;
 };

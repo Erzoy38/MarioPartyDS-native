@@ -41,8 +41,9 @@ Erster Start
               im Takt des Monitors), Hochskalierung der 2D-Grafik (glatte Kanten oder AMD FSR 1),
               NVIDIA DLSS (nur mit NVIDIA-RTX-Karte und 3D-Auflösung über 1x: das 3D wird kleiner
               gezeichnet und von der Grafikkarte wieder scharf gemacht, deutlich schneller bei hoher
-              3D-Auflösung; DLAA glättet nur die Kanten. Schnelle Bewegungen können noch kurz
-              nachziehen, Bewegungsdaten für DLSS folgen in einem späteren Update)
+              3D-Auflösung; DLAA glättet nur die Kanten. Die Bewegung erkennt das Programm, indem es
+              die Polygone des Spiels von Bild zu Bild zuordnet. Wirkt nur dort, wo das Spiel
+              reines 3D zeigt, nicht bei 3D, das mit 2D gemischt ist)
    SOUND      Lautstärke, welches Mikrofon (PC, Headset, PS5-Controller per USB-Kabel),
               Mikrofon-Empfindlichkeit, Pegelanzeige zum Ausprobieren
    CHEATS     alle Minispiele und alle Spielbretter freischalten (wird mit dem Spielstand

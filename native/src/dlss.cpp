@@ -138,7 +138,9 @@ struct Upscaler {
     ID3D11DeviceContext* context = nullptr;
     ID3D11Texture2D* color = nullptr;   // RGBA8, input size
     ID3D11Texture2D* depth = nullptr;   // R32_FLOAT, input size
-    ID3D11Texture2D* motion = nullptr;  // R16G16_FLOAT, input size, all zero
+    ID3D11Texture2D* motion = nullptr;  // R32G32_FLOAT, input size
+    bool motion_zero = true;            // what `motion` holds now
+    ID3D11Texture2D* fresh = nullptr;   // R8_UNORM, input size: DLSS's "bias current colour" mask
     ID3D11Texture2D* output = nullptr;  // RGBA8, output size, written by DLSS
     SDL_Texture* shown = nullptr;       // `output` for SDL
     int in_w = 0, in_h = 0, out_w = 0, out_h = 0;
@@ -177,6 +179,17 @@ float jitter_sign() {
     return sign;
 }
 
+// For checking the direction of the motion vectors: MPDS_DLSS_MV=-1 turns them round, 0 leaves them out.
+float motion_sign() {
+    static const float sign = [] {
+        const char* text = std::getenv("MPDS_DLSS_MV");
+        if (text == nullptr) return 1.0f;
+        const int v = std::atoi(text);
+        return v < 0 ? -1.0f : v == 0 ? 0.0f : 1.0f;
+    }();
+    return sign;
+}
+
 float halton(long long index, int base) {
     float f = 1, r = 0;
     for (long long i = index; i > 0; i /= base) {
@@ -197,13 +210,15 @@ SDL_Texture* dlss_begin(SDL_Renderer* renderer, int mode, int in_w, int in_h, in
     u.in_h = in_h;
     u.out_w = out_w;
     u.out_h = out_h;
-    const std::vector<std::uint32_t> zero(size_t(in_w) * size_t(in_h), 0);
+    const std::vector<float> zero(size_t(in_w) * size_t(in_h) * 2, 0.0f);
     u.color = make_texture(in_w, in_h, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE, nullptr, 0);
     u.depth = make_texture(in_w, in_h, DXGI_FORMAT_R32_FLOAT, D3D11_BIND_SHADER_RESOURCE, nullptr, 0);
-    u.motion = make_texture(in_w, in_h, DXGI_FORMAT_R16G16_FLOAT, D3D11_BIND_SHADER_RESOURCE, zero.data(), UINT(in_w) * 4);
+    u.motion = make_texture(in_w, in_h, DXGI_FORMAT_R32G32_FLOAT, D3D11_BIND_SHADER_RESOURCE, zero.data(), UINT(in_w) * 8);
+    u.motion_zero = true;
+    u.fresh = make_texture(in_w, in_h, DXGI_FORMAT_R8_UNORM, D3D11_BIND_SHADER_RESOURCE, nullptr, 0);
     u.output = make_texture(out_w, out_h, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
                             nullptr, 0);
-    if (u.color == nullptr || u.depth == nullptr || u.motion == nullptr || u.output == nullptr) {
+    if (u.color == nullptr || u.depth == nullptr || u.motion == nullptr || u.fresh == nullptr || u.output == nullptr) {
         g_reason = "DLSS textures could not be made.";
         dlss_end();
         return nullptr;
@@ -252,6 +267,7 @@ void dlss_end() {
     release(u.color);
     release(u.depth);
     release(u.motion);
+    release(u.fresh);
     release(u.output);
     release(u.context);
 }
@@ -262,7 +278,34 @@ bool dlss_evaluate(SDL_Renderer* renderer, const DlssFrame& frame) {
     SDL_FlushRenderer(renderer);
     u.context->UpdateSubresource(u.color, 0, nullptr, frame.rgba, UINT(u.in_w) * 4, 0);
     u.context->UpdateSubresource(u.depth, 0, nullptr, frame.depth, UINT(u.in_w) * 4, 0);
+    const float* motion = motion_sign() == 0.0f ? nullptr : frame.motion;
+    if (motion != nullptr) {
+        u.context->UpdateSubresource(u.motion, 0, nullptr, motion, UINT(u.in_w) * 8, 0);
+        u.motion_zero = false;
+    } else if (!u.motion_zero) {
+        const std::vector<float> zero(size_t(u.in_w) * size_t(u.in_h) * 2, 0.0f);
+        u.context->UpdateSubresource(u.motion, 0, nullptr, zero.data(), UINT(u.in_w) * 8, 0);
+        u.motion_zero = true;
+    }
+    static const bool use_fresh = [] {  // MPDS_DLSS_BIAS=0 leaves the mask out, for comparing
+        const char* text = std::getenv("MPDS_DLSS_BIAS");
+        return text == nullptr || std::atoi(text) != 0;
+    }();
+    const bool fresh = use_fresh && frame.fresh != nullptr;
+    static const bool report = std::getenv("MPDS_MOTION_STATS") != nullptr;
+    static long long calls = 0;
+    if (report && fresh && ++calls % 60 == 0) {
+        size_t marked = 0, moving = 0;
+        const size_t n = size_t(u.in_w) * size_t(u.in_h);
+        for (size_t i = 0; i < n; ++i) marked += frame.fresh[i] != 0;
+        if (frame.motion != nullptr) {
+            for (size_t i = 0; i < n; ++i) moving += frame.motion[i * 2] != 0 || frame.motion[i * 2 + 1] != 0;
+        }
+        std::printf("dlss frame %lld: %zu of %zu pixels new, %zu moving\n", calls, marked, n, moving);
+    }
+    if (fresh) u.context->UpdateSubresource(u.fresh, 0, nullptr, frame.fresh, UINT(u.in_w), 0);
     NVSDK_NGX_D3D11_DLSS_Eval_Params eval{};
+    eval.pInBiasCurrentColorMask = fresh ? u.fresh : nullptr;
     eval.Feature.pInColor = u.color;
     eval.Feature.pInOutput = u.output;
     eval.pInDepth = u.depth;
@@ -272,6 +315,8 @@ bool dlss_evaluate(SDL_Renderer* renderer, const DlssFrame& frame) {
     eval.InJitterOffsetX = -frame.jitter_x * jitter_sign();
     eval.InJitterOffsetY = -frame.jitter_y * jitter_sign();
     eval.InRenderSubrectDimensions = {unsigned(u.in_w), unsigned(u.in_h)};
+    eval.InMVScaleX = motion_sign();  // the vectors are in input pixels already
+    eval.InMVScaleY = motion_sign();
     eval.InReset = frame.reset || u.first ? 1 : 0;
     const NVSDK_NGX_Result r = NGX_D3D11_EVALUATE_DLSS_EXT(u.context, u.feature, g_params, &eval);
     if (NVSDK_NGX_FAILED(r)) {
