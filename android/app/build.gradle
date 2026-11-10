@@ -1,0 +1,85 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Local, never committed (android/.gitignore):
+//   local.properties     sdk.dir=..., mpds.ndkPath=F\:/Tools/Android/android-ndk-r29
+//   keystore.properties  storeFile, storePassword, keyAlias, keyPassword of the release key
+def localProps = new Properties()
+def localFile = rootProject.file('local.properties')
+if (localFile.exists()) localFile.withInputStream { localProps.load(it) }
+def keyProps = new Properties()
+def keyFile = rootProject.file('keystore.properties')
+if (keyFile.exists()) keyFile.withInputStream { keyProps.load(it) }
+
+def nativeDir = file('../../native')
+def sdlJava = new File(nativeDir, 'third_party/SDL3-src/android-project/app/src/main/java')
+def bundled = layout.buildDirectory.dir('generated/mpds-assets')
+
+android {
+    namespace 'io.github.erzoy38.mariopartyds'
+    compileSdk 35
+    ndkVersion '29.0.14206865'  // NDK r29, as native/build_android_runtime.ps1 uses
+    if (localProps['mpds.ndkPath']) ndkPath localProps['mpds.ndkPath']
+
+    defaultConfig {
+        applicationId 'io.github.erzoy38.mariopartyds'
+        minSdk 26      // AAudio for low sound latency; the native code is built for android-26
+        targetSdk 35
+        versionCode 1
+        versionName '0.4.0'
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-26'
+                targets 'main', 'SDL3-shared'
+            }
+        }
+        ndk {
+            abiFilters 'arm64-v8a', 'x86_64'  // phones and tablets; x86_64 for the emulator
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (keyProps['storeFile']) {
+                storeFile file(keyProps['storeFile'])
+                storePassword keyProps['storePassword']
+                keyAlias keyProps['keyAlias']
+                keyPassword keyProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (keyProps['storeFile']) signingConfig signingConfigs.release
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path new File(nativeDir, 'CMakeLists.txt')
+            version '3.31.6'
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs += [sdlJava]
+            assets.srcDirs += [bundled]
+        }
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+// Fonts and the start screen's picture into the APK's assets, where platform::bundled_file looks.
+tasks.register('bundleGameFiles', Copy) {
+    from(new File(nativeDir, 'third_party/fonts')) { into 'fonts' }
+    from(new File(nativeDir, 'assets')) { include 'menu_background.png' }
+    into bundled
+}
+preBuild.dependsOn 'bundleGameFiles'

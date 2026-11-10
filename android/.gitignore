@@ -1,0 +1,9 @@
+# Machine paths, the release key and its passwords, and all build output stay local.
+local.properties
+keystore.properties
+*.jks
+*.keystore
+.gradle/
+build/
+app/build/
+app/.cxx/

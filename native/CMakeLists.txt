@@ -14,7 +14,8 @@ if(MSVC)
     # Generated blocks are large in number; no optimisation keeps compile times workable for now.
     set(MPDS_GAME_CODE_OPTIONS /W0 /Od /bigobj /utf-8)
 else()
-    set(MPDS_WARNINGS -Wall -Wextra)
+    # u8path is deprecated in C++20 but still the plain way to a UTF-8 path; MSVC is told so by define.
+    set(MPDS_WARNINGS -Wall -Wextra -Wno-deprecated-declarations -Wno-missing-field-initializers)
     set(MPDS_GAME_CODE_OPTIONS -w -O1)
 endif()
 
@@ -126,6 +127,17 @@ if(WIN32)
         add_custom_command(TARGET MarioPartyDS POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MENU_BACKGROUND}" $<TARGET_FILE_DIR:MarioPartyDS>)
     endif()
+elseif(ANDROID)
+    # SDL3 from its source (third_party/SDL3-src, the same 3.4.20 as on Windows) as libSDL3.so, the game
+    # as libmain.so: the two libraries SDL's Java side (SDLActivity) loads. Built by android/ (Gradle).
+    enable_language(C)
+    set(SDL_SHARED ON CACHE BOOL "" FORCE)
+    set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL3-src" SDL3 EXCLUDE_FROM_ALL)
+    add_library(main SHARED ${MPDS_APP_SOURCES})
+    target_link_libraries(main PRIVATE runtime game_code runtime SDL3::SDL3)
+    target_compile_options(main PRIVATE ${MPDS_WARNINGS})
 else()
-    message(STATUS "The app for Android and iOS comes in phases 3 and 6 (MOBILE_PORT.md); building the runtime only")
+    message(STATUS "The app for iOS comes in phase 6 (MOBILE_PORT.md); building the runtime only")
 endif()

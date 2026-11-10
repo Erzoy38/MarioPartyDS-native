@@ -19,6 +19,12 @@ std::filesystem::path user_folder();
 // Windows and iOS: in the program's folder or bundle. Android: inside the APK, by relative name.
 std::string bundled_file(const std::string& name);
 
+// The ROM the player chose, made lasting. Windows: the file stays where it is. Android/iOS: the
+// picker's address (content://, or a file only lent to the app) works only for a while, so the ROM is
+// copied once into the app's own storage and that copy's path is returned. Empty, with `error`, if
+// it cannot be read or kept.
+std::string keep_rom(const std::string& chosen, std::string& error);
+
 // The SDL render driver to try first; if it fails, SDL chooses. Windows: Direct3D 11 (DLSS needs it),
 // Android: Vulkan, iOS: Metal.
 const char* preferred_render_driver();

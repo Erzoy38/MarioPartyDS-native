@@ -1,0 +1,4 @@
+// The Android app of the Windows port: the same native/ code, built by Gradle through CMake.
+// See MOBILE_PORT.md, phase 3.
+rootProject.name = 'MarioPartyDS'
+include ':app'

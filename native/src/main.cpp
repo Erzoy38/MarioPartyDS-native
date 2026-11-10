@@ -356,6 +356,10 @@ bool mouse_on_touch_screen(float window_x, float window_y, float& x, float& y) {
 
 // Starts this program again with the menu, after the game has ended.
 void restart_with_menu(const std::string& rom_path) {
+    if (platform::kMobile) {  // one app, no second program: the player opens it again (MOBILE_PORT.md, phase 4)
+        std::printf("back to the menu: the app ends\n");
+        return;
+    }
     const char* base = SDL_GetBasePath();
     const std::string exe = std::string(base ? base : "") + "MarioPartyDS.exe";
     std::vector<const char*> args{exe.c_str(), rom_path.c_str(), "--menu"};

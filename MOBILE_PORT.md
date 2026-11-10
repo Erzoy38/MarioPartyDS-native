@@ -129,7 +129,26 @@ Der Port ist schon weitgehend plattformneutral:
 - Prüfung: Die Boot-Prüfung (`MarioPartyDS-headless`) läuft als Android-Programm im Emulator mit Abbild
   und muss gleiche Speicherabzüge ergeben.
 
-### Phase 3: Android-Projekt
+### Phase 3: Android-Projekt, gebaut (ohne Test auf Gerät oder Emulator)
+- **Bauen:** `powershell -ExecutionPolicy Bypass -File android\build.ps1` (Werkzeuge in `F:\Tools\Android`).
+  - Ergebnis: `app-release.apk` (123 MB) und `app-release.aab` (79 MB), signiert mit CN=Erzoy38,
+    Zertifikat SHA-256 `929b3285…645ebb`. Paket `io.github.erzoy38.mariopartyds`, minSdk 26, targetSdk 35.
+  - Werkzeuge: AGP 8.7.3, Gradle 8.12, JDK 17, NDK r29, CMake 3.31.6 (CMake 4 lehnt das alte
+    Mindestversion-Feld von Mbed TLS ab).
+  - Temporäre Dateien liegen in `F:\Tools\Android\tmp`; auf C: reichte der Platz für bundletool nicht.
+- **Lokal, nie committen:** `android/local.properties`, `android/keystore.properties` und
+  `F:\Tools\Android\keys\mpds-release.jks`. Ohne Schlüssel und Passwort gibt es keine Updates der App.
+- **Aufbau:** SDL3 aus den Quellen als `libSDL3.so`, das Spiel als `libmain.so` (`native/CMakeLists.txt`,
+  Zweig `ANDROID`). Die Java-Seite ist SDLs `SDLActivity`; `MainActivity` nennt nur die Bibliotheken.
+  Schriften und Startbild kommen als Assets ins APK.
+- **Code:**
+  - `platform::keep_rom` kopiert die gewählte ROM (auf Android eine `content://`-Adresse) nach
+    `rom.nds` im App-Ordner, damit sie beim nächsten Start ohne erneute Freigabe da ist.
+  - Der DLSS-Hinweis steht nur unter Windows.
+  - „Zurück zum Menü“ beendet auf dem Handy vorerst die App (Phase 4).
+- **Windows geprüft:** Bild nach 2400 Bildern gleich wie v0.3.6 (`ADF748D445B5A938`), Boot-Prüfung gleich.
+- **Offen:** Start auf Gerät oder Emulator. Dieser PC hat keinen Hypervisor für den Emulator.
+
 - Gradle-Projekt `android/` auf Basis der `android-project`-Vorlage aus den SDL3-Quellen (`SDLActivity`).
 - CMake bindet `native/` ein.
 - Ziele: arm64-v8a für Geräte, x86_64 für den Emulator.

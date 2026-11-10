@@ -6,7 +6,7 @@ namespace platform {
 
 namespace {
 
-std::string base_path() {
+[[maybe_unused]] std::string base_path() {
     const char* base = SDL_GetBasePath();
     return std::string(base ? base : "");
 }
@@ -30,6 +30,29 @@ std::string bundled_file(const std::string& name) {
 #else
     return base_path() + name;
 #endif
+}
+
+std::string keep_rom(const std::string& chosen, std::string& error) {
+    if constexpr (!kMobile) {
+        return chosen;
+    } else {
+        const std::filesystem::path kept = user_folder() / "rom.nds";
+        const std::string kept_text = kept.string();  // UTF-8 on Android and iOS
+        if (chosen == kept_text) return chosen;
+        std::size_t size = 0;
+        void* data = SDL_LoadFile(chosen.c_str(), &size);
+        if (data == nullptr) {
+            error = std::string("The file could not be read: ") + SDL_GetError();
+            return {};
+        }
+        const bool saved = SDL_SaveFile(kept_text.c_str(), data, size);
+        SDL_free(data);
+        if (!saved) {
+            error = std::string("The ROM could not be kept in the app's storage: ") + SDL_GetError();
+            return {};
+        }
+        return kept_text;
+    }
 }
 
 const char* preferred_render_driver() {

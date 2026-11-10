@@ -34,7 +34,7 @@ constexpr Rgba kPanel{28, 52, 172, 232};     // the settings window
 constexpr Rgba kPanelEdge{46, 168, 240, 255};
 constexpr Rgba kErrorText{255, 150, 150, 255};
 
-const char* const kLanguages[] = {"", "English", "Fran\xC3\xA7" "ais", "Deutsch", "Italiano", "Espa\xC3\xB1ol"};
+const char* const kLanguages[] = {"", "English", ("Fran\xC3\xA7" "ais"), "Deutsch", "Italiano", "Espa\xC3\xB1ol"};
 
 // --- The file dialog: SDL may answer from another thread ---
 struct Dialog {
@@ -226,8 +226,15 @@ private:
         }
     }
 
-    std::optional<StartChoice> on_rom_chosen(const std::string& path) {
-        if (path.empty()) return std::nullopt;  // cancelled
+    std::optional<StartChoice> on_rom_chosen(const std::string& picked) {
+        if (picked.empty()) return std::nullopt;  // cancelled
+        std::string kept_error;
+        const std::string kept = platform::keep_rom(picked, kept_error);
+        if (kept.empty()) {
+            show_error(file_name(picked) + ": " + kept_error);
+            return std::nullopt;
+        }
+        const std::string& path = kept;
         const std::string problem = check_rom_(path);
         if (!problem.empty()) {
             show_error(file_name(path) + ": " + problem);
@@ -398,10 +405,12 @@ private:
         const TextStyle version{Font::Heavy, 14, kWhite, kInk, 2.0f};
         const std::string build = "Build " + build_date();
         text_.draw(build, 990 - text_.width(build, version), 528, version);
-        // The DLSS SDK's licence asks for the attribution on the start screen.
-        const TextStyle credit{Font::Plain, 12, {255, 255, 255, 200}, kInk, 1.5f};
-        const std::string uses = "Uses NVIDIA DLSS. NVIDIA and DLSS are trademarks of NVIDIA Corporation.";
-        text_.draw(uses, 990 - text_.width(uses, credit), 552, credit);
+        // The DLSS SDK's licence asks for the attribution on the start screen; phones have no DLSS.
+        if (!platform::kMobile) {
+            const TextStyle credit{Font::Plain, 12, {255, 255, 255, 200}, kInk, 1.5f};
+            const std::string uses = "Uses NVIDIA DLSS. NVIDIA and DLSS are trademarks of NVIDIA Corporation.";
+            text_.draw(uses, 990 - text_.width(uses, credit), 552, credit);
+        }
 
         switch (chosen) {
             case kStart: choice = start(After::Local); break;
