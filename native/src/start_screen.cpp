@@ -456,11 +456,18 @@ private:
             automatic_window_size(settings_.layout, settings_.aspect, settings_.scale, aw, ah);
             const std::string automatic = "Auto (" + std::to_string(aw) + " x " + std::to_string(ah) + ")";
             int rw = 0, rh = 0;
-            const std::string shown = parse_resolution(settings_.resolution, rw, rh)
-                                          ? std::to_string(rw) + " x " + std::to_string(rh) : automatic;
+            std::string shown = automatic;
+            if (parse_resolution(settings_.resolution, rw, rh)) {
+                shown = std::to_string(rw) + " x " + std::to_string(rh);
+                if (rh == 720) shown += "  (720p)";
+                else if (rh == 1080) shown += "  (1080p)";
+                else if (rh == 1440) shown += "  (1440p)";
+                else if (rh == 2160) shown += "  (4K)";
+            }
             Row size{"RESOLUTION", shown,
-                     "The size of the game window, or of the screen in fullscreen. All resolutions of your display "
-                     "are listed. Auto makes the window fit the DS screens."};
+                     "The size of the game window, or of the screen in fullscreen: your display's resolutions plus "
+                     "720p, 1080p, 1440p and 4K. A size larger than the display only fits in fullscreen on a display "
+                     "that has it. Auto makes the window fit the DS screens."};
             size.kind = Row::Kind::Choice;
             size.change = [this, sizes](int delta) {
                 auto at = std::find(sizes.begin(), sizes.end(), settings_.resolution);
@@ -499,6 +506,33 @@ private:
                 save();
             };
             rows.push_back(render);
+            static const int kRates[] = {30, 60, 120, 144, 240};
+            const int fps = settings_.frame_rate;
+            Row rate{"FRAME RATE", std::to_string(fps) + (fps > 60 ? " Hz (synced)" : " FPS"),
+                     "The DS game makes 60 pictures a second; that never changes, or the game would run faster. "
+                     "30 shows every second picture and saves power. 60 is normal. 120, 144 and 240 are for "
+                     "monitors with that refresh rate: each picture is shown in step with the monitor (VSync), "
+                     "which avoids stutter and tearing, but there are no extra pictures."};
+            rate.kind = Row::Kind::Choice;
+            rate.change = [this](int delta) {
+                int i = 1;
+                for (int k = 0; k < 5; ++k) {
+                    if (kRates[k] == settings_.frame_rate) i = k;
+                }
+                settings_.frame_rate = kRates[(i + (delta == 0 ? 1 : delta) + 5) % 5];
+                save();
+            };
+            rows.push_back(rate);
+            Row upscale{"UPSCALING", settings_.upscale ? "Smooth edges (Scale2x)" : "Off",
+                        "Instead of DLSS, which needs an NVIDIA card and a 3D engine this game does not have: makes the "
+                        "2D pictures (menus, characters, text) larger with smooth diagonal edges instead of blocks, "
+                        "in the style of pixel-art upscalers. Works on every PC. Combine with 3D RESOLUTION for the 3D."};
+            upscale.kind = Row::Kind::Choice;
+            upscale.change = [this](int) {
+                settings_.upscale = settings_.upscale ? 0 : 1;
+                save();
+            };
+            rows.push_back(upscale);
             Row full{"FULLSCREEN", settings_.fullscreen ? "On" : "Off", "The whole screen instead of a window. F11 switches it at any time."};
             full.kind = Row::Kind::Choice;
             full.change = [this](int) {

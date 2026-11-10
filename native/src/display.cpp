@@ -57,11 +57,10 @@ std::vector<std::pair<int, int>> display_resolutions() {
     SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(SDL_GetPrimaryDisplay(), &count);
     for (int i = 0; modes != nullptr && i < count; ++i) found.insert({modes[i]->w, modes[i]->h});
     SDL_free(modes);
-    if (found.empty()) {
-        for (auto r : {std::pair{1280, 720}, std::pair{1366, 768}, std::pair{1600, 900}, std::pair{1920, 1080},
-                       std::pair{2560, 1440}, std::pair{3840, 2160}}) {
-            found.insert(r);
-        }
+    // The usual sizes are always offered, 1440p and 4K included, also beyond this display's own.
+    for (auto r : {std::pair{1280, 720}, std::pair{1366, 768}, std::pair{1600, 900}, std::pair{1920, 1080},
+                   std::pair{2560, 1440}, std::pair{3840, 2160}}) {
+        found.insert(r);
     }
     return {found.begin(), found.end()};
 }

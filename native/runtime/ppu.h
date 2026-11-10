@@ -19,7 +19,9 @@ const u8* ppu_frame();
 // 3D picture alone, the pixels come from the screen's own 3D picture (higher resolution, texture
 // pack); everywhere else the game's pixels are made larger. `scale` is set. False if there is no
 // screen picture yet (then `out` is the game's frame made larger).
-bool ppu_compose_display(std::vector<u8>& out, int& scale);
+// upscaled (may be null) is the game's frame already made larger to the same size; it is used for the
+// pixels that do not come from the 3D picture.
+bool ppu_compose_display(std::vector<u8>& out, int& scale, const u8* upscaled = nullptr);
 
 // How many lines used 3D and display capture, so a test can tell what it actually exercised.
 struct PpuGaps {

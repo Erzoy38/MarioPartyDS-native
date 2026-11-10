@@ -37,7 +37,8 @@ Erster Start
    PRELAUNCH  Sprache des Spiels
    VIDEO      Auflösung (alle Auflösungen des Bildschirms), Vollbild, Anordnung der beiden
               Bildschirme (übereinander, nebeneinander, Hybrid), Bildformat (4:3, 16:9, Widescreen),
-              3D-Auflösung (1x bis 4x, schärfere 3D-Grafik)
+              3D-Auflösung (1x bis 4x, schärfere 3D-Grafik), Bildrate (30, 60 oder 120/144/240 Hz
+              im Takt des Monitors), Hochskalierung mit glatten Kanten für die 2D-Grafik
    SOUND      Lautstärke, welches Mikrofon (PC, Headset, PS5-Controller per USB-Kabel),
               Mikrofon-Empfindlichkeit, Pegelanzeige zum Ausprobieren
    CHEATS     alle Minispiele und alle Spielbretter freischalten (wird mit dem Spielstand

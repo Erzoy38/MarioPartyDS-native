@@ -23,6 +23,7 @@
 #include "machine.h"
 #include "microphone.h"
 #include "rom_mods.h"
+#include "upscale.h"
 #include "net.h"
 #include "ppu.h"
 #include "sound.h"
@@ -518,7 +519,13 @@ int main(int argc, char** argv) {
     // The picture for the screen: the 3D at a higher resolution and texture packs, only for showing.
     texture_pack_start(app.render_scale, app.hd_textures, app.dump_textures);
     const bool display_picture = app.render_scale > 1 || app.hd_textures;
-    const int shown_scale = display_picture ? app.render_scale : 1;
+    // The upscaler makes the 2D pixels larger to the 3D resolution, or 4 times on its own.
+    const bool upscaling = app.upscale != 0 && (!display_picture || app.render_scale > 1);
+    const int shown_scale = display_picture ? app.render_scale : (upscaling ? 4 : 1);
+    // Frame rate: the game always makes 60 pictures; 30 shows every second one, above 60 each picture
+    // waits for the display's refresh (VSync).
+    if (app.frame_rate > 60) SDL_SetRenderVSync(renderer, 1);
+    const int show_every = app.frame_rate == 30 ? 2 : 1;
     if (shown_scale != 1) {
         SDL_DestroyTexture(texture);
         texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, kWidth * shown_scale,
@@ -584,7 +591,8 @@ int main(int argc, char** argv) {
     int frames_since_change = -1;
     bool running = true;
     std::vector<u8> picture(size_t(kWidth) * kHeight * 4);
-    std::vector<u8> shown;  // the screen's picture, with display_picture
+    std::vector<u8> shown;  // the screen's picture, with display_picture or the upscaler
+    std::vector<u8> upscaled;  // the game's frame made larger, for the parts without 3D
 
     while (running && frame_limit != frames) {
         SDL_Event event;
@@ -677,21 +685,28 @@ int main(int argc, char** argv) {
             frames_since_change = -1;
         }
 
-        if (display_picture) {
-            int s = 1;
-            ppu_compose_display(shown, s);
-            if (s == shown_scale) {
-                draw_pointer(shown.data(), s);
-                SDL_UpdateTexture(texture, nullptr, shown.data(), kWidth * s * 4);
+        if (frames % show_every == 0) {
+            if (display_picture) {
+                int s = 1;
+                if (upscaling) upscale_picture(ppu_frame(), shown_scale, upscaled);
+                ppu_compose_display(shown, s, upscaling ? upscaled.data() : nullptr);
+                if (s == shown_scale) {
+                    draw_pointer(shown.data(), s);
+                    SDL_UpdateTexture(texture, nullptr, shown.data(), kWidth * s * 4);
+                }
+            } else if (upscaling) {
+                upscale_picture(ppu_frame(), shown_scale, shown);
+                draw_pointer(shown.data(), shown_scale);
+                SDL_UpdateTexture(texture, nullptr, shown.data(), kWidth * shown_scale * 4);
+            } else {
+                std::memcpy(picture.data(), ppu_frame(), picture.size());
+                draw_pointer(picture.data(), 1);
+                SDL_UpdateTexture(texture, nullptr, picture.data(), kWidth * 4);
             }
-        } else {
-            std::memcpy(picture.data(), ppu_frame(), picture.size());
-            draw_pointer(picture.data(), 1);
-            SDL_UpdateTexture(texture, nullptr, picture.data(), kWidth * 4);
+            draw_screens();
+            if (asking_to_leave) draw_question(renderer, "Zurück zum Hauptmenü?", "Enter: ja    Esc: nein");
+            SDL_RenderPresent(renderer);
         }
-        draw_screens();
-        if (asking_to_leave) draw_question(renderer, "Zurück zum Hauptmenü?", "Enter: ja    Esc: nein");
-        SDL_RenderPresent(renderer);
 
         next_frame += ticks_per_frame;
         const u64 now = SDL_GetPerformanceCounter();

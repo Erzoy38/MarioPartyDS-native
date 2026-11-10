@@ -670,7 +670,7 @@ void ppu_finish_frame() {
 
 const u8* ppu_frame() { return g_front; }
 
-bool ppu_compose_display(std::vector<u8>& out, int& scale) {
+bool ppu_compose_display(std::vector<u8>& out, int& scale, const u8* upscaled) {
     scale = gpu3d_display_scale();
     const u32* picture = gpu3d_display_picture(g_display_front);
     const int s = scale;
@@ -692,8 +692,10 @@ bool ppu_compose_display(std::vector<u8>& out, int& scale) {
                     if (column != 0xFFFF && picture != nullptr) {
                         p = picture[(size_t(line3d) * size_t(s) + size_t(j)) * out_w + size_t(column) * size_t(s) + size_t(i)];
                     }
-                    if (((p >> 18) & 31) == 0) {  // nothing of the 3D picture here: the game's pixel
-                        std::memcpy(px, native, 4);
+                    if (((p >> 18) & 31) == 0) {  // nothing of the 3D picture here: the game's pixel,
+                        // made larger by the upscaler when there is one
+                        if (upscaled != nullptr) std::memcpy(px, upscaled + (px - out.data()), 4);
+                        else std::memcpy(px, native, 4);
                         continue;
                     }
                     u32 c[3] = {p & 63, (p >> 6) & 63, (p >> 12) & 63};
