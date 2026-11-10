@@ -25,14 +25,27 @@ if(NOT GENERATED)
     message(FATAL_ERROR "native/generated is empty: run python tools/recomp.py first")
 endif()
 
-# The encryption of online games: Windows' own (CNG), elsewhere Mbed TLS (MOBILE_PORT.md, phase 2).
+# The encryption of online games: Windows' own (CNG), elsewhere Mbed TLS. -DMPDS_CRYPTO=mbedtls on
+# Windows builds the Mbed TLS side here too, to test it against the Windows server.
 if(WIN32)
-    set(MPDS_SECURE runtime/secure.cpp)
+    set(MPDS_CRYPTO cng CACHE STRING "cng or mbedtls")
 else()
-    set(MPDS_SECURE runtime/secure_mbedtls.cpp)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${MPDS_SECURE}")
-        message(FATAL_ERROR "${MPDS_SECURE} is missing: the encryption for this platform comes in phase 2")
-    endif()
+    set(MPDS_CRYPTO mbedtls CACHE STRING "mbedtls")
+endif()
+if(MPDS_CRYPTO STREQUAL "mbedtls")
+    enable_language(C)
+    set(MBEDTLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls-3.6.4")
+    set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(GEN_FILES OFF CACHE BOOL "" FORCE)
+    set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)  # Mbed TLS's older cmake_minimum_required: keep the static runtime
+    add_subdirectory("${MBEDTLS_DIR}" mbedtls EXCLUDE_FROM_ALL)
+    set(MPDS_SECURE runtime/secure.cpp runtime/secure_mbedtls.cpp)
+    set(MPDS_CRYPTO_LIBS MbedTLS::mbedcrypto)
+else()
+    set(MPDS_SECURE runtime/secure.cpp runtime/secure_cng.cpp)
+    set(MPDS_CRYPTO_LIBS bcrypt)
 endif()
 
 add_library(runtime STATIC runtime/cpu.cpp runtime/memory.cpp runtime/hw.cpp runtime/bios.cpp
@@ -40,8 +53,9 @@ add_library(runtime STATIC runtime/cpu.cpp runtime/memory.cpp runtime/hw.cpp run
             ${MPDS_SECURE} runtime/machine.cpp)
 target_include_directories(runtime PUBLIC runtime)
 target_compile_options(runtime PRIVATE ${MPDS_WARNINGS})
+target_link_libraries(runtime PUBLIC ${MPDS_CRYPTO_LIBS})
 if(WIN32)
-    target_link_libraries(runtime PUBLIC ws2_32 bcrypt)
+    target_link_libraries(runtime PUBLIC ws2_32)
 endif()
 
 add_library(game_code STATIC ${GENERATED})
@@ -57,7 +71,7 @@ target_compile_options(MarioPartyDS-headless PRIVATE ${MPDS_WARNINGS})
 
 # The lobby server holds no game code and no game content. It runs on Windows only.
 if(WIN32)
-    add_executable(MarioPartyDS-server server/server.cpp runtime/secure.cpp)
+    add_executable(MarioPartyDS-server server/server.cpp runtime/secure.cpp runtime/secure_cng.cpp)
     target_include_directories(MarioPartyDS-server PRIVATE runtime)
     target_link_libraries(MarioPartyDS-server PRIVATE ws2_32 bcrypt)
     target_compile_options(MarioPartyDS-server PRIVATE ${MPDS_WARNINGS})
@@ -66,11 +80,21 @@ endif()
 # The game with its window. Shared parts first, then what each platform has of its own.
 set(MPDS_APP_SOURCES src/main.cpp src/launcher.cpp src/start_screen.cpp src/ui.cpp src/display.cpp
     src/microphone.cpp src/rom_mods.cpp src/upscale.cpp src/platform.cpp)
+# Text: Windows' fonts through GDI, elsewhere Noto Sans with stb_truetype. -DMPDS_TEXT=font on
+# Windows shows the phones' text here, to compare.
 if(WIN32)
-    list(APPEND MPDS_APP_SOURCES src/dlss.cpp src/text_raster_win.cpp)
+    set(MPDS_TEXT gdi CACHE STRING "gdi or font")
+    list(APPEND MPDS_APP_SOURCES src/dlss.cpp)
 else()
-    list(APPEND MPDS_APP_SOURCES src/dlss_none.cpp src/text_raster_font.cpp)
+    set(MPDS_TEXT font CACHE STRING "font")
+    list(APPEND MPDS_APP_SOURCES src/dlss_none.cpp)
 endif()
+if(MPDS_TEXT STREQUAL "font")
+    list(APPEND MPDS_APP_SOURCES src/text_raster_font.cpp)
+else()
+    list(APPEND MPDS_APP_SOURCES src/text_raster_win.cpp)
+endif()
+set(MPDS_FONTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts")
 
 if(WIN32)
     # SDL3 is the unpacked SDL3-devel-*-VC.zip in native/third_party/SDL3.
@@ -93,11 +117,15 @@ if(WIN32)
 
     # The start screen's picture. It shows the game's characters, so it stays local (native/assets/ is
     # not committed); without it the start screen draws plain stripes.
+    if(MPDS_TEXT STREQUAL "font")
+        add_custom_command(TARGET MarioPartyDS POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${MPDS_FONTS_DIR}" $<TARGET_FILE_DIR:MarioPartyDS>/fonts)
+    endif()
     set(MENU_BACKGROUND "${CMAKE_CURRENT_SOURCE_DIR}/assets/menu_background.png")
     if(EXISTS "${MENU_BACKGROUND}")
         add_custom_command(TARGET MarioPartyDS POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MENU_BACKGROUND}" $<TARGET_FILE_DIR:MarioPartyDS>)
     endif()
 else()
-    message(FATAL_ERROR "The app for Android and iOS is set up in phases 3 and 6 (MOBILE_PORT.md)")
+    message(STATUS "The app for Android and iOS comes in phases 3 and 6 (MOBILE_PORT.md); building the runtime only")
 endif()

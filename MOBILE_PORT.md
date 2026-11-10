@@ -99,7 +99,29 @@ Der Port ist schon weitgehend plattformneutral:
   - Boot-Vergleich „all equal“.
   - Online-Test PC gegen PC.
 
-### Phase 2: Übersetzen mit Clang
+### Phase 2: Übersetzen mit Clang, erledigt (bis auf den Lauf auf Android)
+- **Werkzeuge:**
+  - Android NDK r29 liegt in `F:\Tools\Android\android-ndk-r29`.
+  - In `native/third_party/` liegen SDL3 3.4.20 als Quelltext (`SDL3-src`), Mbed TLS 3.6.4,
+    `stb/stb_truetype.h` und `fonts/` (Noto Sans Regular, SemiBold und Black, mit OFL.txt).
+- **Verschlüsselung:**
+  - `secure.cpp` enthält jetzt nur noch Handshake, Datensätze und bekannte Server.
+  - Die Bausteine kommen aus `secure_crypto.h`, umgesetzt in `secure_cng.cpp` (Windows) und
+    `secure_mbedtls.cpp`. Der rohe ECDH-Wert wird dort wie bei CNG umgedreht (niedrigstes Byte zuerst).
+  - Das Schlüsselformat entspricht CNG-Blobs.
+  - Geprüft mit `-DMPDS_CRYPTO=mbedtls` (`native/build-mbedtls`): Alle Lobby-Regeln und das Spiel zu viert
+    bestehen mit Mbed-TLS-Spielern gegen den Windows-Server.
+- **Schrift:**
+  - `text_raster_font.cpp` zeichnet mit stb_truetype nach GDI-Maßen: Em-Größe, Zeile =
+    Ascent + Descent, Abstand nach jedem Buchstaben.
+  - Mit `-DMPDS_TEXT=font` auch unter Windows ansehbar; der Startbildschirm behält sein Layout.
+- **Clang:**
+  - `native/build_android_runtime.ps1 [-Abi arm64-v8a|x86_64]` baut Runtime, Spielcode und `MarioPartyDS-headless`.
+  - Behoben wurden nur `fopen_s` und `_stricmp`, über `runtime/platform_c.h`.
+  - Keine Clang-Warnungen in der Runtime.
+  - Der Spielcode mit `-O1` braucht etwa 2 Minuten. Ohne Debug-Infos ist das Programm 46 MB groß (arm64).
+- **Offen:** Der Lauf auf Android (Boot-Vergleich im Emulator) braucht den Emulator aus Phase 3.
+
 - Runtime und Spielcode werden mit dem NDK-Clang für arm64 übersetzt. Die Fehler, die MSVC durchgehen
   ließ, werden behoben.
 - Der Spielcode bekommt `-O1`, nicht wie unter Windows `/Od`. Auf dem Handy wäre er sonst zu langsam.

@@ -5,6 +5,7 @@
 #include "machine.h"
 #include "memory.h"
 
+#include "platform_c.h"
 #include "platform_socket.h"
 
 #include <algorithm>
@@ -237,8 +238,8 @@ void guest_conn_lost(struct Guest& guest, const char* why);
 void write_rejoin_file() {
     if (g_settings.rejoin_file.empty()) return;
     const std::string temporary = g_settings.rejoin_file + ".new";
-    FILE* f = nullptr;
-    if (fopen_s(&f, temporary.c_str(), "w") != 0 || f == nullptr) return;
+    FILE* f = plat::open_file(temporary.c_str(), "w");
+    if (f == nullptr) return;
     std::string key;
     for (u8 b : g_settings.server_key) {
         char two[3];
@@ -1555,8 +1556,8 @@ void net_wait_text(std::string& first, std::string& second) {
 bool net_catching_up() { return g_settings.role == NetRole::Guest && g_steps.size() > 30; }
 
 bool net_load_rejoin(const std::string& path, NetSettings& settings) {
-    FILE* f = nullptr;
-    if (fopen_s(&f, path.c_str(), "r") != 0 || f == nullptr) return false;
+    FILE* f = plat::open_file(path.c_str(), "r");
+    if (f == nullptr) return false;
     char line[512];
     int found = 0;
     while (std::fgets(line, sizeof line, f) != nullptr) {

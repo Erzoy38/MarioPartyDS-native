@@ -33,6 +33,7 @@ unpack_report.csv
 
 # Build output and caches. native/generated/ is translated game code.
 native/build/
+native/build-*/
 native/generated/
 run/
 __pycache__/

@@ -12,6 +12,7 @@
 // players (default 4) are in and ready. --join @FILE waits for FILE and joins with its code; guests
 // are ready at once. --lobby-exit 1 ends right after the start, for lobby tests.
 #define _CRT_SECURE_NO_WARNINGS  // sscanf reads the command line here, with field widths
+#include "platform_c.h"
 #include "cpu.h"
 #include "gpu3d.h"
 #include "hw.h"
@@ -277,7 +278,7 @@ struct LobbyOptions {
 
 int character_by_name(const char* name) {
     for (int i = 0; i < lobby::kCharacters; ++i) {
-        if (!_stricmp(name, lobby::character_name(i))) return i;
+        if (!plat::compare_ignoring_case(name, lobby::character_name(i))) return i;
     }
     std::fprintf(stderr, "unknown character %s\n", name);
     std::exit(2);
