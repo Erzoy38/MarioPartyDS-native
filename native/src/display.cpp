@@ -1,6 +1,7 @@
 #include "display.h"
 
 #include "gpu3d.h"
+#include "platform.h"
 
 #include <algorithm>
 #include <cctype>
@@ -168,15 +169,9 @@ void dump_texture(u64 key, int w, int h, const std::vector<u32>& rgba) {
 
 }  // namespace
 
-std::filesystem::path texture_folder() {
-    const char* base = SDL_GetBasePath();
-    return std::filesystem::u8path(std::string(base ? base : "")) / "textures";
-}
+std::filesystem::path texture_folder() { return platform::user_folder() / "textures"; }
 
-std::filesystem::path mods_folder() {
-    const char* base = SDL_GetBasePath();
-    return std::filesystem::u8path(std::string(base ? base : "")) / "mods";
-}
+std::filesystem::path mods_folder() { return platform::user_folder() / "mods"; }
 
 void texture_pack_start(int render_scale, bool replace, bool dump) {
     g_pack.clear();

@@ -1,9 +1,6 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
 #include "lobby.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "platform_socket.h"
 
 #include <algorithm>
 #include <chrono>
@@ -20,15 +17,10 @@ double now_seconds() {
     return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 
-SOCKET as_socket(std::uintptr_t s) { return static_cast<SOCKET>(s); }
+using plat::kNoSocket;
+using plat::Socket;
 
-bool winsock_ready() {
-    static bool started = [] {
-        WSADATA data;
-        return WSAStartup(MAKEWORD(2, 2), &data) == 0;
-    }();
-    return started;
-}
+Socket as_socket(std::uintptr_t s) { return plat::from_handle(s); }
 
 }  // namespace
 
@@ -39,14 +31,14 @@ LobbyClient::~LobbyClient() {
 void LobbyClient::fail(const std::string& text) {
     message_ = text;
     std::printf("lobby: %s\n", text.c_str());
-    if (as_socket(socket_) != INVALID_SOCKET) closesocket(as_socket(socket_));
-    socket_ = std::uintptr_t(INVALID_SOCKET);
+    if (as_socket(socket_) != kNoSocket) plat::close_socket(as_socket(socket_));
+    socket_ = plat::to_handle(kNoSocket);
     phase_ = Phase::Failed;
 }
 
 void LobbyClient::disconnect() {
-    if (as_socket(socket_) != INVALID_SOCKET) closesocket(as_socket(socket_));
-    socket_ = std::uintptr_t(INVALID_SOCKET);
+    if (as_socket(socket_) != kNoSocket) plat::close_socket(as_socket(socket_));
+    socket_ = plat::to_handle(kNoSocket);
     inbox_.clear();
     outbox_.clear();
     channel_.reset();
@@ -63,7 +55,7 @@ void LobbyClient::connect(const std::string& address, std::uint16_t port, const 
     name_ = name;
     address_ = address;
     port_ = port;
-    if (!winsock_ready()) return fail("Netzwerk nicht verfügbar.");
+    if (!plat::net_ready()) return fail("Netzwerk nicht verfügbar.");
     addrinfo hints{};
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -71,18 +63,17 @@ void LobbyClient::connect(const std::string& address, std::uint16_t port, const 
     if (getaddrinfo(address.c_str(), std::to_string(port).c_str(), &hints, &found) != 0 || found == nullptr) {
         return fail("Server-Adresse nicht gefunden: " + address);
     }
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    u_long nonblocking = 1;
-    ioctlsocket(s, FIONBIO, &nonblocking);
-    BOOL yes = TRUE;
-    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&yes), sizeof yes);
-    const int result = ::connect(s, found->ai_addr, int(found->ai_addrlen));
+    Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    plat::set_blocking(s, false);
+    plat::set_option(s, IPPROTO_TCP, TCP_NODELAY, true);
+    plat::no_sigpipe(s);
+    const int result = ::connect(s, found->ai_addr, plat::SockLen(found->ai_addrlen));
     freeaddrinfo(found);
-    if (result != 0 && WSAGetLastError() != WSAEWOULDBLOCK) {
-        closesocket(s);
+    if (result != 0 && !plat::would_block()) {
+        plat::close_socket(s);
         return fail("Keine Verbindung zum Server.");
     }
-    socket_ = std::uintptr_t(s);
+    socket_ = plat::to_handle(s);
     phase_ = Phase::Connecting;
     connect_started_ = now_seconds();
     // Every connection to the server is encrypted; the lobby's messages wait for the handshake.
@@ -222,7 +213,7 @@ void LobbyClient::handle(std::uint8_t type, const std::vector<std::uint8_t>& bod
 
 void LobbyClient::poll() {
     if (phase_ == Phase::Offline || phase_ == Phase::Failed || phase_ == Phase::Started) return;
-    SOCKET s = as_socket(socket_);
+    Socket s = as_socket(socket_);
     const double now = now_seconds();
     if (phase_ == Phase::Connecting) {
         fd_set writable, failed;
@@ -231,9 +222,10 @@ void LobbyClient::poll() {
         FD_SET(s, &writable);
         FD_SET(s, &failed);
         timeval zero{0, 0};
-        select(0, nullptr, &writable, &failed, &zero);
-        if (FD_ISSET(s, &failed)) return fail("Keine Verbindung zum Server.");
-        if (!FD_ISSET(s, &writable)) {
+        select(plat::select_width(s), nullptr, &writable, &failed, &zero);
+        const int state = plat::connect_state(s, writable, failed);
+        if (state < 0) return fail("Keine Verbindung zum Server.");
+        if (state == 0) {
             if (now - connect_started_ > kConnectTimeout) fail("Server antwortet nicht.");
             return;
         }
@@ -248,19 +240,19 @@ void LobbyClient::poll() {
         send(kPing, w.bytes);
     }
     while (!outbox_.empty()) {
-        const int n = ::send(s, reinterpret_cast<const char*>(outbox_.data()), int(outbox_.size()), 0);
+        const int n = plat::send_some(s, outbox_.data(), int(outbox_.size()));
         if (n <= 0) {
-            if (WSAGetLastError() == WSAEWOULDBLOCK) break;
+            if (plat::would_block()) break;
             return fail("Verbindung zum Server verloren.");
         }
         outbox_.erase(outbox_.begin(), outbox_.begin() + n);
     }
     for (;;) {
         char buffer[8192];
-        const int n = recv(s, buffer, sizeof buffer, 0);
+        const int n = plat::receive_some(s, buffer, int(sizeof buffer));
         if (n == 0) return fail("Der Server hat die Verbindung beendet.");
         if (n < 0) {
-            if (WSAGetLastError() == WSAEWOULDBLOCK) break;
+            if (plat::would_block()) break;
             return fail("Verbindung zum Server verloren.");
         }
         if (!channel_->receive(reinterpret_cast<const std::uint8_t*>(buffer), std::size_t(n), inbox_, outbox_)) {
@@ -283,9 +275,9 @@ void LobbyClient::poll() {
         std::printf("lobby: server key %s%s\n", fingerprint_.c_str(), server_is_new_ ? " (new)" : "");
     }
     while (!outbox_.empty()) {
-        const int n = ::send(s, reinterpret_cast<const char*>(outbox_.data()), int(outbox_.size()), 0);
+        const int n = plat::send_some(s, outbox_.data(), int(outbox_.size()));
         if (n <= 0) {
-            if (WSAGetLastError() == WSAEWOULDBLOCK) break;
+            if (plat::would_block()) break;
             return fail("Verbindung zum Server verloren.");
         }
         outbox_.erase(outbox_.begin(), outbox_.begin() + n);
@@ -305,18 +297,17 @@ void LobbyClient::poll() {
 
 LobbyStart LobbyClient::take_start() {
     LobbyStart start = start_;
-    SOCKET s = as_socket(socket_);
+    Socket s = as_socket(socket_);
     // What is still queued is encrypted already and counted; the game sends it first.
     start.outbox = std::move(outbox_);
     outbox_.clear();
-    u_long blocking = 0;
-    ioctlsocket(s, FIONBIO, &blocking);
-    start.socket = std::uintptr_t(s);
+    plat::set_blocking(s, true);
+    start.socket = plat::to_handle(s);
     start.channel = channel_;
     if (channel_) start.server_key = channel_->server_key();
     channel_.reset();
     start.inbox = std::move(inbox_);
     inbox_.clear();
-    socket_ = std::uintptr_t(INVALID_SOCKET);
+    socket_ = plat::to_handle(kNoSocket);
     return start;
 }

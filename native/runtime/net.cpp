@@ -1,5 +1,3 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
 #include "net.h"
 
 #include "lobby_protocol.h"
@@ -7,12 +5,11 @@
 #include "machine.h"
 #include "memory.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "platform_socket.h"
 
 #include <algorithm>
 #include <array>
-#include <intrin.h>
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -81,37 +78,30 @@ constexpr u64 kRetryEvery = 1000;  // between attempts to connect again
 constexpr u64 kConnectTimeout = 3000;
 constexpr size_t kOutLimit = size_t(8) << 20;
 
-u64 now_ms() {
-    static const LONGLONG frequency = [] {
-        LARGE_INTEGER f;
-        QueryPerformanceFrequency(&f);
-        return f.QuadPart;
-    }();
-    LARGE_INTEGER counter;
-    QueryPerformanceCounter(&counter);
-    return u64(counter.QuadPart / frequency * 1000 + counter.QuadPart % frequency * 1000 / frequency);
-}
+u64 now_ms() { return plat::steady_ms(); }
+
+using plat::kNoSocket;
+using plat::Socket;
 
 // --- Connections: non-blocking sockets with their own buffers ---
 struct Conn {
-    SOCKET s = INVALID_SOCKET;
+    Socket s = kNoSocket;
     std::vector<u8> in, out;  // `in` decrypted, `out` as it goes on the wire
     u64 heard = 0;
     std::shared_ptr<secure::Channel> channel;  // to the server: encrypted (secure.h)
     bool key_checked = false;
-    bool open() const { return s != INVALID_SOCKET; }
+    bool open() const { return s != kNoSocket; }
 };
 
-void make_nonblocking(SOCKET s) {
-    u_long nonblocking = 1;
-    ioctlsocket(s, FIONBIO, &nonblocking);
-    BOOL yes = TRUE;
-    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&yes), sizeof yes);
+void make_nonblocking(Socket s) {
+    plat::set_blocking(s, false);
+    plat::set_option(s, IPPROTO_TCP, TCP_NODELAY, true);
+    plat::no_sigpipe(s);
 }
 
 void conn_close(Conn& c) {
-    if (c.open()) closesocket(c.s);
-    c.s = INVALID_SOCKET;
+    if (c.open()) plat::close_socket(c.s);
+    c.s = kNoSocket;
     c.in.clear();
     c.out.clear();
     c.channel.reset();
@@ -120,9 +110,9 @@ void conn_close(Conn& c) {
 
 bool conn_flush(Conn& c) {
     while (c.open() && !c.out.empty()) {
-        const int n = send(c.s, reinterpret_cast<const char*>(c.out.data()), int(std::min<size_t>(c.out.size(), 1 << 16)), 0);
+        const int n = plat::send_some(c.s, c.out.data(), int(std::min<size_t>(c.out.size(), 1 << 16)));
         if (n <= 0) {
-            if (WSAGetLastError() == WSAEWOULDBLOCK) break;
+            if (plat::would_block()) break;
             return false;
         }
         c.out.erase(c.out.begin(), c.out.begin() + n);
@@ -146,7 +136,7 @@ bool conn_send(Conn& c, u8 type, const std::vector<u8>& body) {
 bool conn_read(Conn& c) {
     for (;;) {
         char buffer[16384];
-        const int n = recv(c.s, buffer, sizeof buffer, 0);
+        const int n = plat::receive_some(c.s, buffer, int(sizeof buffer));
         if (n > 0) {
             c.heard = now_ms();
             if (!c.channel) {
@@ -158,7 +148,7 @@ bool conn_read(Conn& c) {
             continue;
         }
         if (n == 0) return false;
-        return WSAGetLastError() == WSAEWOULDBLOCK;
+        return plat::would_block();
     }
 }
 
@@ -206,7 +196,7 @@ std::map<u32, Guest> g_guests;  // host, by aid
 Conn g_main;
 bool g_main_attached = false;  // carries the game: through the server only after kResumed
 bool g_ever_connected = false;
-SOCKET g_connecting = INVALID_SOCKET;
+Socket g_connecting = kNoSocket;
 u64 g_connect_began = 0, g_last_attempt = 0, g_server_pinged = 0;
 u64 g_main_down_since = 0;
 bool g_left_on_purpose = false;
@@ -225,7 +215,7 @@ bool g_rejoin_waiting = false;  // came back with a new program: sends nothing u
 u32 g_skip_upto = 0;            // messages up to this number the host already has from the old program
 
 // Host side.
-SOCKET g_listen = INVALID_SOCKET;
+Socket g_listen = kNoSocket;
 std::vector<Conn> g_pending;  // new direct connections, not yet known
 std::deque<std::vector<u8>> g_own_records;
 std::mt19937_64 g_token_random{std::random_device{}()};
@@ -437,7 +427,7 @@ void flush_everything(u64 limit_ms) {
             waiting = waiting || (guest.conn.open() && !guest.conn.out.empty());
         }
         if (!waiting || now_ms() - begin > limit_ms) return;
-        Sleep(5);
+        plat::sleep_ms(5);
     }
 }
 
@@ -489,7 +479,7 @@ void guest_conn_lost(Guest& guest, const char* why) {
 
 void start_connect() {
     const u64 now = now_ms();
-    if (g_connecting != INVALID_SOCKET || now - g_last_attempt < kRetryEvery) return;
+    if (g_connecting != kNoSocket || now - g_last_attempt < kRetryEvery) return;
     g_last_attempt = now;
     addrinfo hints{};
     hints.ai_family = AF_INET;
@@ -499,12 +489,12 @@ void start_connect() {
         || found == nullptr) {
         return;
     }
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     make_nonblocking(s);
-    const int result = connect(s, found->ai_addr, int(found->ai_addrlen));
+    const int result = connect(s, found->ai_addr, plat::SockLen(found->ai_addrlen));
     freeaddrinfo(found);
-    if (result != 0 && WSAGetLastError() != WSAEWOULDBLOCK) {
-        closesocket(s);
+    if (result != 0 && !plat::would_block()) {
+        plat::close_socket(s);
         return;
     }
     g_connecting = s;
@@ -543,25 +533,25 @@ void on_connected() {
 }
 
 void check_connect() {
-    if (g_connecting == INVALID_SOCKET) return;
+    if (g_connecting == kNoSocket) return;
     fd_set writable, failed;
     FD_ZERO(&writable);
     FD_ZERO(&failed);
     FD_SET(g_connecting, &writable);
     FD_SET(g_connecting, &failed);
     timeval zero{0, 0};
-    select(0, nullptr, &writable, &failed, &zero);
-    if (FD_ISSET(g_connecting, &failed)
-        || (!FD_ISSET(g_connecting, &writable) && now_ms() - g_connect_began > kConnectTimeout)) {
-        closesocket(g_connecting);
-        g_connecting = INVALID_SOCKET;
+    select(plat::select_width(g_connecting), nullptr, &writable, &failed, &zero);
+    const int state = plat::connect_state(g_connecting, writable, failed);
+    if (state < 0 || (state == 0 && now_ms() - g_connect_began > kConnectTimeout)) {
+        plat::close_socket(g_connecting);
+        g_connecting = kNoSocket;
         return;
     }
-    if (!FD_ISSET(g_connecting, &writable)) return;
+    if (state == 0) return;
     conn_close(g_main);
     g_main.s = g_connecting;
     g_main.heard = now_ms();
-    g_connecting = INVALID_SOCKET;
+    g_connecting = kNoSocket;
     if (g_relay_mode) {  // the server: encrypted, the hello and kResume wait for the handshake
         g_main.channel = std::make_shared<secure::Channel>(secure::Channel::Role::Client);
         g_main.out = g_main.channel->start();
@@ -677,9 +667,9 @@ void service_direct_host() {
         FD_ZERO(&set);
         FD_SET(g_listen, &set);
         timeval zero{0, 0};
-        if (select(0, &set, nullptr, nullptr, &zero) <= 0) break;
-        SOCKET s = accept(g_listen, nullptr, nullptr);
-        if (s == INVALID_SOCKET) break;
+        if (select(plat::select_width(g_listen), &set, nullptr, nullptr, &zero) <= 0) break;
+        Socket s = accept(g_listen, nullptr, nullptr);
+        if (s == kNoSocket) break;
         make_nonblocking(s);
         Conn conn;
         conn.s = s;
@@ -749,19 +739,23 @@ void wait_sockets(int wait_ms) {
     FD_ZERO(&writable);
     FD_ZERO(&failed);
     int count = 0;
+    Socket highest = 0;
     auto add = [&](const Conn& conn) {
         FD_SET(conn.s, &readable);
         if (!conn.out.empty()) FD_SET(conn.s, &writable);
+        highest = std::max(highest, conn.s);
         ++count;
     };
     if (g_main.open()) add(g_main);
-    if (g_connecting != INVALID_SOCKET) {
+    if (g_connecting != kNoSocket) {
         FD_SET(g_connecting, &writable);
         FD_SET(g_connecting, &failed);
+        highest = std::max(highest, g_connecting);
         ++count;
     }
-    if (g_listen != INVALID_SOCKET) {
+    if (g_listen != kNoSocket) {
         FD_SET(g_listen, &readable);
+        highest = std::max(highest, g_listen);
         ++count;
     }
     for (const Conn& conn : g_pending) add(conn);
@@ -769,11 +763,11 @@ void wait_sockets(int wait_ms) {
         if (guest.conn.open()) add(guest.conn);
     }
     if (count == 0) {
-        if (wait_ms > 0) Sleep(DWORD(wait_ms));
+        if (wait_ms > 0) plat::sleep_ms(unsigned(wait_ms));
         return;
     }
     timeval timeout{0, long(wait_ms) * 1000};
-    select(0, &readable, &writable, &failed, &timeout);
+    select(plat::select_width(highest), &readable, &writable, &failed, &timeout);
 }
 
 void take_in_guest(Guest& guest, const std::vector<u8>& hello);
@@ -1304,7 +1298,7 @@ bool step_hook(Cpu& c) {
         std::memcpy(&step, body.data() + 2, 8);
         store_step(std::vector<u8>(body.begin() + 10, body.end()), bitmap, step);
     }
-    g_stats.players = u32(__popcnt(rd16(kWhState + 0xE)));
+    g_stats.players = u32(std::popcount(rd16(kWhState + 0xE)));
     finish(c, 1);
     return true;
 }
@@ -1314,8 +1308,7 @@ bool step_hook(Cpu& c) {
 void net_start(const NetSettings& settings) {
     g_settings = settings;
     if (settings.role == NetRole::Off) return;
-    WSADATA data;
-    WSAStartup(MAKEWORD(2, 2), &data);
+    plat::net_ready();
     g_relay_mode = settings.relay != 0;
     if (settings.rejoin && settings.role == NetRole::Guest) {
         // A new program coming back: connects itself (service_main), sends nothing until the host
@@ -1329,7 +1322,7 @@ void net_start(const NetSettings& settings) {
                     g_relay_mode ? " through the server" : "", settings.code.c_str());
     } else if (g_relay_mode) {
         // Through the server: the lobby's connection, already open (lobby.h).
-        g_main.s = static_cast<SOCKET>(settings.relay);
+        g_main.s = plat::from_handle(settings.relay);
         make_nonblocking(g_main.s);
         g_main.in = settings.relay_inbox;
         g_main.channel = settings.relay_channel;
@@ -1347,8 +1340,7 @@ void net_start(const NetSettings& settings) {
         where.sin_port = htons(settings.port);
         inet_pton(AF_INET, settings.address.c_str(), &where.sin_addr);
         g_listen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        BOOL yes = TRUE;
-        setsockopt(g_listen, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof yes);
+        plat::set_option(g_listen, SOL_SOCKET, SO_REUSEADDR, true);
         if (bind(g_listen, reinterpret_cast<sockaddr*>(&where), sizeof where) != 0 || listen(g_listen, 4) != 0) {
             runtime_abort("network: cannot listen", settings.port);
         }
@@ -1358,7 +1350,7 @@ void net_start(const NetSettings& settings) {
             if (attempt > 100) runtime_abort("network: cannot reach the host", settings.port);
             g_last_attempt = 0;
             start_connect();
-            Sleep(100);
+            plat::sleep_ms(100);
             check_connect();
         }
     }
@@ -1532,7 +1524,7 @@ void net_set_end_callback(NetEndCallback callback) { g_end_callback = callback; 
 
 std::string net_status_line() {
     if (g_settings.role == NetRole::Off) return {};
-    const int players = g_settings.players > 0 ? g_settings.players : int(__popcnt(rd16(kWhState + 0xE)));
+    const int players = g_settings.players > 0 ? g_settings.players : int(std::popcount(rd16(kWhState + 0xE)));
     std::string line = "P" + std::to_string((is_host() ? 0 : g_own_aid) + 1) + " von " + std::to_string(std::max(players, 1));
     if (is_host()) {
         std::string pings;

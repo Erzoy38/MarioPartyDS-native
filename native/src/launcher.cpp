@@ -1,8 +1,7 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "platform_socket.h"
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include "launcher.h"
 
@@ -34,21 +33,26 @@ constexpr Colour kPlayer[4] = {{0x20, 0x60, 0xE8}, {0xE0, 0x30, 0x20}, {0x30, 0x
 
 // True if something answers on this PC's port (a server started before, from here or by hand).
 bool server_answers(std::uint16_t port) {
-    WSADATA data;
-    WSAStartup(MAKEWORD(2, 2), &data);
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    plat::net_ready();
+    plat::Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in where{};
     where.sin_family = AF_INET;
     where.sin_port = htons(port);
     inet_pton(AF_INET, "127.0.0.1", &where.sin_addr);
     const bool ok = connect(s, reinterpret_cast<sockaddr*>(&where), sizeof where) == 0;
-    closesocket(s);
+    plat::close_socket(s);
     return ok;
 }
 
 // MarioPartyDS-server.exe from this program's folder, in a window of its own that shows its key and
 // log; it keeps running when the game ends or goes back to the menu. Closing that window stops it.
 bool start_server_here(std::uint16_t port, std::string& error) {
+#ifndef _WIN32
+    // The server is a program of its own; phones and tablets only join games.
+    (void)port;
+    error = "Auf diesem Gerät läuft kein Server.";
+    return false;
+#else
     const char* base = SDL_GetBasePath();
     const std::wstring exe = std::filesystem::u8path(std::string(base ? base : "") + "MarioPartyDS-server.exe").wstring();
     if (!std::filesystem::exists(exe)) {
@@ -67,12 +71,12 @@ bool start_server_here(std::uint16_t port, std::string& error) {
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     return true;
+#endif
 }
 
 // This PC's IPv4 addresses in the home network, for players there.
 std::string local_addresses() {
-    WSADATA data;
-    WSAStartup(MAKEWORD(2, 2), &data);
+    plat::net_ready();
     char name[256] = {};
     gethostname(name, sizeof name);
     addrinfo hints{};

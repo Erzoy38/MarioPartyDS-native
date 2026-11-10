@@ -1,8 +1,6 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-
 #include "ui.h"
+
+#include "text_raster.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,30 +9,6 @@
 namespace ui {
 
 namespace {
-
-std::wstring widen(const std::string& s) {
-    if (s.empty()) return {};
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), nullptr, 0);
-    std::wstring w(size_t(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), w.data(), n);
-    return w;
-}
-
-const wchar_t* face(Font font) {
-    switch (font) {
-        case Font::Heavy: return L"Arial Black";
-        case Font::Semibold: return L"Segoe UI Semibold";
-        default: return L"Segoe UI";
-    }
-}
-
-int weight(Font font) {
-    switch (font) {
-        case Font::Heavy: return FW_BLACK;
-        case Font::Semibold: return FW_SEMIBOLD;
-        default: return FW_NORMAL;
-    }
-}
 
 SDL_FColor fcolour(Rgba c) { return {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f}; }
 
@@ -119,44 +93,14 @@ const Text::Image& Text::image(const std::string& text, const TextStyle& style) 
     auto found = cache_.find(key);
     if (found != cache_.end()) return found->second;
 
-    const std::wstring wide = widen(text);
     const int px = std::max(1, int(std::lround(style.size * scale)));
     const float outline_px = style.outline.a > 0 ? style.outline_width * scale : 0;
     const int pad = int(std::ceil(outline_px)) + px / 6 + 2;
 
-    HDC dc = CreateCompatibleDC(nullptr);
-    HFONT font = CreateFontW(-px, 0, 0, 0, weight(style.font), FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
-                             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, face(style.font));
-    HGDIOBJ old_font = SelectObject(dc, font);
-    SetTextCharacterExtra(dc, int(std::lround(style.spacing * scale)));
-    SIZE size{0, 0};
-    if (!wide.empty()) GetTextExtentPoint32W(dc, wide.c_str(), int(wide.size()), &size);
-    TEXTMETRICW metrics{};
-    GetTextMetricsW(dc, &metrics);
-    const int text_w = std::max<int>(size.cx, 1);
-    const int text_h = std::max<int>(metrics.tmHeight, 1);
-    const int w = text_w + 2 * pad, h = text_h + 2 * pad;
-
-    BITMAPINFO info{};
-    info.bmiHeader.biSize = sizeof info.bmiHeader;
-    info.bmiHeader.biWidth = w;
-    info.bmiHeader.biHeight = -h;  // top down
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-    void* bits = nullptr;
-    HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-    HGDIOBJ old_bitmap = SelectObject(dc, bitmap);
-    std::memset(bits, 0, size_t(w) * h * 4);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(255, 255, 255));
-    if (!wide.empty()) TextOutW(dc, pad, pad, wide.c_str(), int(wide.size()));
-    GdiFlush();
-
-    // White text on black: any channel is the coverage.
-    const Uint8* source = static_cast<const Uint8*>(bits);
-    std::vector<float> cover(size_t(w) * h);
-    for (size_t i = 0; i < cover.size(); ++i) cover[i] = source[i * 4 + 1] / 255.0f;
+    const Coverage raster = rasterize_text(text, style.font, px, int(std::lround(style.spacing * scale)), pad);
+    const int text_w = raster.text_w;
+    const int w = raster.w, h = raster.h;
+    const std::vector<float>& cover = raster.cover;
     std::vector<float> ring(cover.size(), 0.0f);
     if (outline_px > 0) {
         const int reach = int(std::ceil(outline_px));
@@ -197,11 +141,6 @@ const Text::Image& Text::image(const std::string& text, const TextStyle& style) 
         p[2] = Uint8(std::lround((style.fill.b * f + style.outline.b * o) / a));
         p[3] = Uint8(std::lround(std::min(a, 1.0f) * 255));
     }
-    SelectObject(dc, old_bitmap);
-    SelectObject(dc, old_font);
-    DeleteObject(bitmap);
-    DeleteObject(font);
-    DeleteDC(dc);
 
     Image made;
     made.texture = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, w, h);

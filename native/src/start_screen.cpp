@@ -2,6 +2,7 @@
 
 #include "display.h"
 #include "microphone.h"
+#include "platform.h"
 #include "dlss.h"
 #include "rom_mods.h"
 
@@ -136,8 +137,7 @@ public:
                 const std::string& rejoin_room, const std::string& notice)
         : window_(window), r_(renderer), text_(renderer), settings_(settings), settings_file_(settings_file),
           rom_path_(rom_path), check_rom_(check_rom), rejoin_room_(rejoin_room), status_(notice) {
-        const char* base = SDL_GetBasePath();
-        const std::string picture = std::string(base ? base : "") + "menu_background.png";
+        const std::string picture = platform::bundled_file("menu_background.png");
         if (SDL_Surface* surface = SDL_LoadPNG(picture.c_str())) {
             background_ = SDL_CreateTextureFromSurface(r_, surface);
             SDL_SetTextureScaleMode(background_, SDL_SCALEMODE_LINEAR);

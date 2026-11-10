@@ -1,4 +1,4 @@
-// Drawing for the start screen: text in Windows' own fonts (GDI, with an outline), rounded boxes
+// Drawing for the start screen: text (text_raster.h, with an outline here), rounded boxes
 // and gradients. Coordinates are logical, as set with SDL_SetRenderLogicalPresentation; text is
 // made at the window's real pixel size, so it stays sharp when the window is large.
 #pragma once

@@ -26,6 +26,7 @@
 #include "rom_mods.h"
 #include "upscale.h"
 #include "net.h"
+#include "platform.h"
 #include "ppu.h"
 #include "sound.h"
 #include "start_screen.h"
@@ -494,9 +495,9 @@ int main(int argc, char** argv) {
     SDL_Renderer* renderer = nullptr;
     const int first_w = use_menu ? kStartWindowWidth : kWidth * scale;
     const int first_h = use_menu ? kStartWindowHeight : kHeight * scale;
-    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d11");
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, platform::preferred_render_driver());
     if (!SDL_CreateWindowAndRenderer("Mario Party DS", first_w, first_h, SDL_WINDOW_RESIZABLE, &window, &renderer)) {
-        SDL_ResetHint(SDL_HINT_RENDER_DRIVER);  // no Direct3D 11: whatever SDL has
+        SDL_ResetHint(SDL_HINT_RENDER_DRIVER);  // that driver failed: whatever SDL has
         if (!SDL_CreateWindowAndRenderer("Mario Party DS", first_w, first_h, SDL_WINDOW_RESIZABLE, &window, &renderer)) {
             std::printf("window failed: %s\n", SDL_GetError());
             return 1;
