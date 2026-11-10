@@ -36,6 +36,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <string>
 #include <vector>
 
@@ -79,6 +80,7 @@ struct Pad {
     bool touching = false;
 };
 Pad g_pad;
+bool g_select_swaps = false;  // the gamepad's Select swaps the screens (hybrid layout)
 
 constexpr int kStickDeadZone = 12000;
 
@@ -96,6 +98,8 @@ u32 pad_keys() {
     };
     u32 keys = 0;
     for (const Binding& binding : kBindings) {
+        // In the hybrid layout Select swaps the screens instead.
+        if (binding.button == SDL_GAMEPAD_BUTTON_BACK && g_select_swaps) continue;
         if (SDL_GetGamepadButton(g_pad.handle, binding.button)) keys |= binding.key;
     }
     const int lx = SDL_GetGamepadAxis(g_pad.handle, SDL_GAMEPAD_AXIS_LEFTX);
@@ -214,6 +218,8 @@ std::string g_rom_path, g_settings_arg;
 bool g_wait_asks_to_leave = false;
 int g_layout = kLayoutStacked, g_aspect = kAspect4x3;
 ScreenRects g_rects{};
+bool g_swapped = false;     // the top screen where the bottom one goes and the other way round (Tab)
+SDL_FRect g_touch_rect{};   // where the touch screen is shown
 
 // Both screens from the texture (the frame, top screen above the bottom one) where the layout puts
 // them; afterwards drawing is in the DS's 256 x 384 again, for the boxes over the game.
@@ -227,8 +233,11 @@ void draw_screens() {
     float tw = 0, th = 0;
     SDL_GetTextureSize(g_texture, &tw, &th);
     const SDL_FRect top{0, 0, tw, th / 2}, bottom{0, th / 2, tw, th / 2};
-    SDL_RenderTexture(g_renderer, g_texture, &top, &g_rects.top);
-    SDL_RenderTexture(g_renderer, g_texture, &bottom, &g_rects.bottom);
+    const SDL_FRect& top_place = g_swapped ? g_rects.bottom : g_rects.top;
+    const SDL_FRect& bottom_place = g_swapped ? g_rects.top : g_rects.bottom;
+    SDL_RenderTexture(g_renderer, g_texture, &top, &top_place);
+    SDL_RenderTexture(g_renderer, g_texture, &bottom, &bottom_place);
+    g_touch_rect = bottom_place;
     SDL_SetRenderLogicalPresentation(g_renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
 }
 
@@ -239,7 +248,7 @@ bool mouse_on_touch_screen(float window_x, float window_y, float& x, float& y) {
     SDL_GetCurrentRenderOutputSize(g_renderer, &ow, &oh);
     if (ww <= 0 || wh <= 0) return false;
     const float px = window_x * float(ow) / float(ww), py = window_y * float(oh) / float(wh);
-    const SDL_FRect& r = g_rects.bottom;
+    const SDL_FRect& r = g_touch_rect;
     if (r.w <= 0 || r.h <= 0 || px < r.x || py < r.y || px >= r.x + r.w || py >= r.y + r.h) return false;
     x = (px - r.x) / r.w * float(kScreenWidth);
     y = (py - r.y) / r.h * float(kScreenHeight);
@@ -516,6 +525,7 @@ int main(int argc, char** argv) {
     if (!use_menu) game_layout();
     g_layout = app.layout;
     g_aspect = app.aspect;
+    g_select_swaps = app.layout == kLayoutHybrid;
     // The picture for the screen: the 3D at a higher resolution and texture packs, only for showing.
     texture_pack_start(app.render_scale, app.hd_textures, app.dump_textures);
     const bool display_picture = app.render_scale > 1 || app.hd_textures;
@@ -593,13 +603,17 @@ int main(int argc, char** argv) {
     std::vector<u8> picture(size_t(kWidth) * kHeight * 4);
     std::vector<u8> shown;  // the screen's picture, with display_picture or the upscaler
     std::vector<u8> upscaled;  // the game's frame made larger, for the parts without 3D
+    std::vector<u8> upscale_work, upscale_source(picture.size());  // the upscaler's own, while it runs
+    std::future<void> upscale_job;
 
     while (running && frame_limit != frames) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) running = false;
             if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
-                if (event.key.scancode == SDL_SCANCODE_F11) {
+                if (event.key.scancode == SDL_SCANCODE_TAB) {
+                    g_swapped = !g_swapped;  // the big and the small screen change places
+                } else if (event.key.scancode == SDL_SCANCODE_F11) {
                     fullscreen = !fullscreen;
                     apply_window_mode(window, app, scale, fullscreen);
                 } else if (event.key.scancode == SDL_SCANCODE_F10 && !fullscreen) {
@@ -613,6 +627,10 @@ int main(int argc, char** argv) {
                     back_to_menu = true;
                     running = false;
                 }
+            }
+            if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && g_select_swaps
+                && event.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) {
+                g_swapped = !g_swapped;
             }
             if (event.type == SDL_EVENT_GAMEPAD_ADDED && g_pad.handle == nullptr) {
                 g_pad.handle = SDL_OpenGamepad(event.gdevice.which);
@@ -686,16 +704,30 @@ int main(int argc, char** argv) {
         }
 
         if (frames % show_every == 0) {
+            // The upscaler works on the other cores while the next picture of the game is made; this
+            // picture shows what it finished for the last one (1/60 s later, not to be seen).
+            if (upscaling) {
+                if (upscale_job.valid()) {
+                    upscale_job.wait();
+                } else {  // the very first picture: made here, before any job runs
+                    std::memcpy(upscale_source.data(), ppu_frame(), upscale_source.size());
+                    upscale_picture(upscale_source.data(), shown_scale, app.upscale, upscale_work);
+                }
+                upscaled.swap(upscale_work);
+                std::memcpy(upscale_source.data(), ppu_frame(), upscale_source.size());
+                upscale_job = std::async(std::launch::async, [&upscale_source, &upscale_work, shown_scale, mode = app.upscale] {
+                    upscale_picture(upscale_source.data(), shown_scale, mode, upscale_work);
+                });
+            }
             if (display_picture) {
                 int s = 1;
-                if (upscaling) upscale_picture(ppu_frame(), shown_scale, upscaled);
                 ppu_compose_display(shown, s, upscaling ? upscaled.data() : nullptr);
                 if (s == shown_scale) {
                     draw_pointer(shown.data(), s);
                     SDL_UpdateTexture(texture, nullptr, shown.data(), kWidth * s * 4);
                 }
             } else if (upscaling) {
-                upscale_picture(ppu_frame(), shown_scale, shown);
+                shown = upscaled;
                 draw_pointer(shown.data(), shown_scale);
                 SDL_UpdateTexture(texture, nullptr, shown.data(), kWidth * shown_scale * 4);
             } else {

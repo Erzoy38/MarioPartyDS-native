@@ -479,7 +479,8 @@ private:
             rows.push_back(size);
             Row layout{"SCREEN LAYOUT", layout_name(settings_.layout),
                        "Where the two DS screens go: one above the other as on the DS, side by side, or hybrid: "
-                       "the top screen large with the touch screen small beside it, good for wide monitors."};
+                       "the top screen large with the touch screen small beside it, good for wide monitors. While "
+                       "playing, Tab (or Select on a controller in hybrid) swaps the two screens."};
             layout.kind = Row::Kind::Choice;
             layout.change = [this](int delta) {
                 settings_.layout = (settings_.layout + (delta == 0 ? 1 : delta) + kLayoutCount) % kLayoutCount;
@@ -495,14 +496,25 @@ private:
                 save();
             };
             rows.push_back(aspect);
+            // Per DS screen: 6x is about the height of a 1440p display, 11x of a 4K one.
+            static const int kScales[] = {1, 2, 3, 4, 5, 6, 8, 11};
+            constexpr int kScaleCount = 8;
             const int r = settings_.render_scale;
-            Row render{"3D RESOLUTION",
-                       std::to_string(r) + "x  (" + std::to_string(256 * r) + " x " + std::to_string(192 * r) + ")",
-                       "The 3D graphics drawn sharper: 2x to 4x the DS's resolution. Needs more computing power. "
-                       "2D pictures (menus, text) stay as on the DS. Online, every player may choose their own."};
+            std::string render_value = std::to_string(r) + "x  (" + std::to_string(256 * r) + " x " + std::to_string(192 * r) + ")";
+            if (r == 6) render_value += " 1440p";
+            else if (r == 11) render_value += " 4K";
+            Row render{"3D RESOLUTION", render_value,
+                       "The 3D graphics drawn sharper, up to 4K (11x the DS's resolution per screen; 6x is about "
+                       "1440p). The processor draws them itself on all its cores: 4x runs smoothly on a modern PC; "
+                       "from 5x on, busy 3D scenes can make the game run slower than it should, 4K about half speed. "
+                       "2D pictures follow UPSCALING. Online, every player may choose their own."};
             render.kind = Row::Kind::Choice;
             render.change = [this](int delta) {
-                settings_.render_scale = (settings_.render_scale - 1 + (delta == 0 ? 1 : delta) + 4) % 4 + 1;
+                int i = 0;
+                for (int k = 0; k < kScaleCount; ++k) {
+                    if (kScales[k] == settings_.render_scale) i = k;
+                }
+                settings_.render_scale = kScales[(i + (delta == 0 ? 1 : delta) + kScaleCount) % kScaleCount];
                 save();
             };
             rows.push_back(render);
@@ -523,13 +535,15 @@ private:
                 save();
             };
             rows.push_back(rate);
-            Row upscale{"UPSCALING", settings_.upscale ? "Smooth edges (Scale2x)" : "Off",
-                        "Instead of DLSS, which needs an NVIDIA card and a 3D engine this game does not have: makes the "
-                        "2D pictures (menus, characters, text) larger with smooth diagonal edges instead of blocks, "
-                        "in the style of pixel-art upscalers. Works on every PC. Combine with 3D RESOLUTION for the 3D."};
+            static const char* const kUpscaleNames[] = {"Off", "Smooth edges (Scale2x)", "AMD FSR 1"};
+            Row upscale{"UPSCALING", kUpscaleNames[std::clamp(settings_.upscale, 0, 2)],
+                        "How the 2D pictures (menus, characters, text) are made larger. Smooth edges: pixel art with "
+                        "smooth diagonals, crisp lines. AMD FSR 1: edge-aware upscaling with sharpening, softer and "
+                        "more like a painting. Both run on the processor, on any PC; DLSS is not possible, it needs "
+                        "an NVIDIA card and a 3D engine this game does not have. Combine with 3D RESOLUTION."};
             upscale.kind = Row::Kind::Choice;
-            upscale.change = [this](int) {
-                settings_.upscale = settings_.upscale ? 0 : 1;
+            upscale.change = [this](int delta) {
+                settings_.upscale = (settings_.upscale + (delta == 0 ? 1 : delta) + 3) % 3;
                 save();
             };
             rows.push_back(upscale);
@@ -804,6 +818,11 @@ private:
                 row_ = int(i);
                 change_row = int(i);
                 change = 0;
+                // On a choice, the left part of the value (‹) goes back, the right part (›) forward.
+                if (row.kind == Row::Kind::Choice && i < value_left_.size() && value_left_[i] > 0) {
+                    const float left = value_left_[i], right = box.x + box.w - 8;
+                    if (in.mouse_x >= left - 12) change = in.mouse_x < (left + right) / 2 ? -1 : 1;
+                }
             }
             const bool focused = row_ == int(i);
             ui::fill_rounded(r_, box, 14, focused ? Rgba{255, 255, 255, 46} : Rgba{255, 255, 255, 16});
@@ -847,6 +866,8 @@ private:
             }
             const float vw = text_.width(value, value_style);
             text_.draw(value, box.x + box.w - 16 - vw, box.y + 5, value_style);
+            if (value_left_.size() <= i) value_left_.resize(i + 1, 0);
+            value_left_[i] = box.x + box.w - 16 - vw;
         }
         // Keys for the row in focus.
         if (editing_ >= 0) {
@@ -916,6 +937,7 @@ private:
     int tab_ = 0;
     int row_ = 0;
     int editing_ = -1;
+    std::vector<float> value_left_;  // where each row's value began last picture, for clicks on ‹ ›
     std::string* edit_target_ = nullptr;
     std::string edit_text_;
     std::string settings_note_;

@@ -1314,7 +1314,7 @@ void gpu3d_vblank() {
 const u32* gpu3d_line(u32 line) { return g_picture[line]; }
 
 void gpu3d_set_display(int scale, bool replace_textures, bool dump_textures, const Gpu3dTextureHooks& hooks) {
-    g_display_scale = std::clamp(scale, 1, 8);
+    g_display_scale = std::clamp(scale, 1, 12);
     g_display_replace = replace_textures;
     g_display_dump = dump_textures;
     g_hooks = hooks;

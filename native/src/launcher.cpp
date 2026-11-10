@@ -361,7 +361,7 @@ AppSettings load_settings(const std::filesystem::path& file) {
         else if (key == "resolution") settings.resolution = value;
         else if (key == "layout") settings.layout = std::clamp(std::atoi(value.c_str()), 0, 2);
         else if (key == "aspect") settings.aspect = std::clamp(std::atoi(value.c_str()), 0, 2);
-        else if (key == "render_scale") settings.render_scale = std::clamp(std::atoi(value.c_str()), 1, 4);
+        else if (key == "render_scale") settings.render_scale = std::clamp(std::atoi(value.c_str()), 1, 11);
         else if (key == "hd_textures") settings.hd_textures = value == "1";
         else if (key == "dump_textures") settings.dump_textures = value == "1";
         else if (key == "volume") settings.volume = std::clamp(std::atoi(value.c_str()), 0, 100);
@@ -374,7 +374,7 @@ AppSettings load_settings(const std::filesystem::path& file) {
             const int fps = std::atoi(value.c_str());
             if (fps == 30 || fps == 60 || fps == 120 || fps == 144 || fps == 240) settings.frame_rate = fps;
         }
-        else if (key == "upscale") settings.upscale = std::clamp(std::atoi(value.c_str()), 0, 1);
+        else if (key == "upscale") settings.upscale = std::clamp(std::atoi(value.c_str()), 0, 2);
     }
     return settings;
 }

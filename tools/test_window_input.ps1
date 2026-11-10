@@ -46,7 +46,7 @@ $log = $null
 if ($ExtraArgs -match "--settings\s+(\S+)") { $log = [IO.Path]::ChangeExtension((Join-Path (Get-Location) $Matches[1]), ".log") }
 $romArg = if ($NoRom) { "" } else { "`"$rom`"" }  # -NoRom: the start screen without a ROM
 $p = Start-Process -FilePath "native\build\MarioPartyDS.exe" -ArgumentList "$romArg --scale $Scale --frames $Frames --save `"$saveFull`" --screenshot `"$outFull`" $ExtraArgs" -PassThru
-$named = @{ ENTER = 0x0D; ESC = 0x1B; BACK = 0x08; LEFT = 0x25; UP = 0x26; RIGHT = 0x27; DOWN = 0x28 }
+$named = @{ ENTER = 0x0D; ESC = 0x1B; BACK = 0x08; TAB = 0x09; LEFT = 0x25; UP = 0x26; RIGHT = 0x27; DOWN = 0x28 }
 
 function Send-Key([byte]$vk) {
     $scan = [byte][Win]::MapVirtualKey($vk, 0)
