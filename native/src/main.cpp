@@ -17,6 +17,7 @@
 #include <SDL3/SDL_main.h>
 
 #include "display.h"
+#include "dlss.h"
 #include "gpu3d.h"
 #include "hw.h"
 #include "launcher.h"
@@ -372,6 +373,7 @@ void on_network_wait() {
         if (event.type == SDL_EVENT_QUIT) {
             std::printf("closed while waiting for the other players\n");
             net_leave();
+            dlss_stop();  // before SDL takes the Direct3D device away
             SDL_Quit();
             std::exit(0);
         }
@@ -383,6 +385,7 @@ void on_network_wait() {
                 std::printf("left while waiting for the other players\n");
                 net_leave();
                 restart_with_menu(g_rom_path);
+                dlss_stop();  // before SDL takes the Direct3D device away
                 SDL_Quit();
                 std::exit(0);
             }
@@ -406,6 +409,7 @@ void on_network_end(const std::string& text) {
         bool done = false;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
+                dlss_stop();  // before SDL takes the Direct3D device away
                 SDL_Quit();
                 std::exit(0);
             }
@@ -421,6 +425,7 @@ void on_network_end(const std::string& text) {
         SDL_Delay(30);
     }
     restart_with_menu(g_rom_path);
+    dlss_stop();  // before SDL takes the Direct3D device away
     SDL_Quit();
     std::exit(0);
 }
@@ -506,6 +511,7 @@ int main(int argc, char** argv) {
     if (smoke_test) {
         SDL_RenderClear(renderer);
         SDL_RenderPresent(renderer);
+        dlss_stop();  // before SDL takes the Direct3D device away
         SDL_Quit();
         return 0;
     }
@@ -516,6 +522,8 @@ int main(int argc, char** argv) {
     FILE* log = std::freopen(log_file.string().c_str(), "w", stdout);
     (void)log;
     machine_set_abort_hook(on_abort);
+    // NVIDIA DLSS, where the card has it; the settings say why not otherwise.
+    if (!dlss_start(renderer, data_folder)) std::printf("dlss: not available: %s\n", dlss_reason().c_str());
 
     std::error_code missing;
     if (rom_path.empty() && !app.rom.empty() && std::filesystem::exists(std::filesystem::u8path(app.rom), missing)) {
@@ -542,12 +550,14 @@ int main(int argc, char** argv) {
         // Straight into the game (tests, --local): the ROM from the command line, the settings or a dialog.
         if (rom_path.empty()) rom_path = ask_for_rom(window);
         if (rom_path.empty()) {
+            dlss_stop();  // before SDL takes the Direct3D device away
             SDL_Quit();
             return 0;
         }
         const std::string problem = check_rom(rom_path);
         if (!problem.empty()) {
             show_error(problem);
+            dlss_stop();  // before SDL takes the Direct3D device away
             SDL_Quit();
             return 2;
         }
@@ -561,6 +571,7 @@ int main(int argc, char** argv) {
         start_layout();
         const StartChoice picked = run_start_screen(window, renderer, app, settings_file, rom_path, check_rom, rejoin_room, "");
         if (picked.kind == StartChoice::Kind::Quit) {
+            dlss_stop();  // before SDL takes the Direct3D device away
             SDL_Quit();
             return 0;
         }
@@ -577,6 +588,7 @@ int main(int argc, char** argv) {
         menu_layout();
         LaunchChoice choice = run_launcher(window, renderer, app, settings_file);
         if (choice.kind == LaunchChoice::Kind::Quit) {
+            dlss_stop();  // before SDL takes the Direct3D device away
             SDL_Quit();
             return 0;
         }
@@ -894,6 +906,7 @@ int main(int argc, char** argv) {
     if (online) net_leave();
     if (back_to_menu) restart_with_menu(rom_path);
     microphone.close();  // before SDL ends, or closing it later reaches into nothing
+    dlss_stop();  // before SDL takes the Direct3D device away
     SDL_Quit();
     return 0;
 }

@@ -38,7 +38,9 @@ Erster Start
    VIDEO      Auflösung (alle Auflösungen des Bildschirms), Vollbild, Anordnung der beiden
               Bildschirme (übereinander, nebeneinander, Hybrid), Bildformat (4:3, 16:9, Widescreen),
               3D-Auflösung (1x bis 11x = 4K, schärfere 3D-Grafik), Bildrate (30, 60 oder 120/144/240 Hz
-              im Takt des Monitors), Hochskalierung der 2D-Grafik (glatte Kanten oder AMD FSR 1)
+              im Takt des Monitors), Hochskalierung der 2D-Grafik (glatte Kanten oder AMD FSR 1),
+              NVIDIA DLSS (nur mit NVIDIA-RTX-Karte; wird in dieser Version erkannt und gespeichert,
+              das Bild nutzt es ab dem nächsten Update)
    SOUND      Lautstärke, welches Mikrofon (PC, Headset, PS5-Controller per USB-Kabel),
               Mikrofon-Empfindlichkeit, Pegelanzeige zum Ausprobieren
    CHEATS     alle Minispiele und alle Spielbretter freischalten (wird mit dem Spielstand
@@ -67,3 +69,8 @@ Esc               Zurück zum Startbildschirm
 Controller (wird erkannt, sobald er angeschlossen ist): Tasten wie beim DS (A rechts, B unten,
 X oben, Y links), Schultertasten L/R, Start, Back = Select (in der Anordnung Hybrid tauscht Select die Bildschirme). Der rechte Stick bewegt einen Zeiger
 auf dem Touchscreen; Drücken des rechten Sticks oder der rechte Trigger tippt. Linker Trigger: ins Mikrofon pusten.
+
+NVIDIA DLSS
+-----------
+Dieses Programm verwendet NVIDIA DLSS (nvngx_dlss.dll, Lizenz in nvngx_dlss.license.txt).
+NVIDIA und DLSS sind Marken der NVIDIA Corporation.

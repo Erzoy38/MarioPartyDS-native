@@ -2,6 +2,7 @@
 
 #include "display.h"
 #include "microphone.h"
+#include "dlss.h"
 #include "rom_mods.h"
 
 #include <fstream>
@@ -397,6 +398,10 @@ private:
         const TextStyle version{Font::Heavy, 14, kWhite, kInk, 2.0f};
         const std::string build = "Build " + build_date();
         text_.draw(build, 990 - text_.width(build, version), 528, version);
+        // The DLSS SDK's licence asks for the attribution on the start screen.
+        const TextStyle credit{Font::Plain, 12, {255, 255, 255, 200}, kInk, 1.5f};
+        const std::string uses = "Uses NVIDIA DLSS. NVIDIA and DLSS are trademarks of NVIDIA Corporation.";
+        text_.draw(uses, 990 - text_.width(uses, credit), 552, credit);
 
         switch (chosen) {
             case kStart: choice = start(After::Local); break;
@@ -547,6 +552,33 @@ private:
                 save();
             };
             rows.push_back(upscale);
+            // DLSS: what the card offers, and the 3D size it would draw for the chosen 3D resolution.
+            std::string dlss_value = "Not available";
+            if (dlss_available()) {
+                dlss_value = dlss_mode_name(settings_.dlss);
+                unsigned w = 0, h = 0;
+                const unsigned out_w = 256u * unsigned(settings_.render_scale), out_h = 192u * unsigned(settings_.render_scale);
+                if (settings_.dlss != kDlssOff && dlss_render_size(settings_.dlss, out_w, out_h, w, h)) {
+                    dlss_value += "  (" + std::to_string(w) + "x" + std::to_string(h) + " > " + std::to_string(out_w) + "x"
+                                  + std::to_string(out_h) + ")";
+                }
+            }
+            Row dlss{"NVIDIA DLSS", dlss_value,
+                     dlss_available()
+                         ? "NVIDIA DLSS on this card: the 3D graphics drawn smaller and made sharp again by the card's AI "
+                           "cores, for more speed (Quality to Ultra Performance), or DLAA for smoother edges at full "
+                           "size. The numbers show the size drawn and the 3D RESOLUTION it becomes. In this version the "
+                           "choice is saved and checked; the picture uses it from the next update."
+                         : "NVIDIA DLSS needs an NVIDIA RTX graphics card, a current driver and nvngx_dlss.dll next to "
+                           "the game. Here: " + dlss_reason()};
+            if (dlss_available()) {
+                dlss.kind = Row::Kind::Choice;
+                dlss.change = [this](int delta) {
+                    settings_.dlss = (settings_.dlss + (delta == 0 ? 1 : delta) + kDlssModeCount) % kDlssModeCount;
+                    save();
+                };
+            }
+            rows.push_back(dlss);
             Row full{"FULLSCREEN", settings_.fullscreen ? "On" : "Off", "The whole screen instead of a window. F11 switches it at any time."};
             full.kind = Row::Kind::Choice;
             full.change = [this](int) {

@@ -375,6 +375,7 @@ AppSettings load_settings(const std::filesystem::path& file) {
             if (fps == 30 || fps == 60 || fps == 120 || fps == 144 || fps == 240) settings.frame_rate = fps;
         }
         else if (key == "upscale") settings.upscale = std::clamp(std::atoi(value.c_str()), 0, 2);
+        else if (key == "dlss") settings.dlss = std::clamp(std::atoi(value.c_str()), 0, 5);
     }
     return settings;
 }
@@ -388,7 +389,7 @@ void save_settings(const std::filesystem::path& file, const AppSettings& s) {
         << (s.hd_textures ? 1 : 0) << "\ndump_textures=" << (s.dump_textures ? 1 : 0) << "\nvolume=" << s.volume
         << "\nmic_device=" << s.mic_device << "\nmic_sensitivity=" << s.mic_sensitivity << "\ncheat_minigames="
         << (s.cheat_minigames ? 1 : 0) << "\ncheat_boards=" << (s.cheat_boards ? 1 : 0) << "\nfile_mods="
-        << (s.file_mods ? 1 : 0) << "\nframe_rate=" << s.frame_rate << "\nupscale=" << s.upscale << "\n";
+        << (s.file_mods ? 1 : 0) << "\nframe_rate=" << s.frame_rate << "\nupscale=" << s.upscale << "\ndlss=" << s.dlss << "\n";
 }
 
 std::filesystem::path known_servers_file(const std::filesystem::path& settings_file) {

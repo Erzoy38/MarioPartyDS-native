@@ -27,7 +27,10 @@ FILES = [
 ]
 FORBIDDEN = (".nds", ".sav", ".dsv", ".key", ".ini", ".log", ".rejoin")
 # Taken when present: the start screen's picture (local only, see native/CMakeLists.txt).
-OPTIONAL = [(os.path.join(BUILD, "menu_background.png"), "menu_background.png")]
+OPTIONAL = [(os.path.join(BUILD, "menu_background.png"), "menu_background.png"),
+            # NVIDIA DLSS (see native/CMakeLists.txt): the DLL and its licence, which must go with it.
+            (os.path.join(BUILD, "nvngx_dlss.dll"), "nvngx_dlss.dll"),
+            (os.path.join("native", "third_party", "dlss", "bin", "nvngx_dlss.license.txt"), "nvngx_dlss.license.txt")]
 
 
 def packaged():

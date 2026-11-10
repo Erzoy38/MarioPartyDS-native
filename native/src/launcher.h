@@ -31,7 +31,8 @@ struct AppSettings {
     bool cheat_boards = false;     // every board unlocked
     bool file_mods = false;        // files in mods\ replace the game's
     int frame_rate = 60;           // pictures shown per second: 30, 60, or 120 / 144 / 240 (synced to the display)
-    int upscale = 0;               // 0 off, 1 smooth edges of the 2D pictures (Scale2x / Scale3x)
+    int upscale = 0;               // 0 off, 1 smooth edges of the 2D pictures (Scale2x / Scale3x), 2 FSR
+    int dlss = 0;                  // DlssMode: off, DLAA, Quality, Balanced, Performance, Ultra Performance
 };
 
 AppSettings load_settings(const std::filesystem::path& file);

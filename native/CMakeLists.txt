@@ -41,13 +41,21 @@ target_compile_options(MarioPartyDS-server PRIVATE /W4 /WX /utf-8)
 
 set(SDL3_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL3/cmake")
 find_package(SDL3 REQUIRED CONFIG)
-add_executable(MarioPartyDS WIN32 src/main.cpp src/launcher.cpp src/start_screen.cpp src/ui.cpp src/display.cpp src/microphone.cpp src/rom_mods.cpp src/upscale.cpp)
+add_executable(MarioPartyDS WIN32 src/main.cpp src/launcher.cpp src/start_screen.cpp src/ui.cpp src/display.cpp src/microphone.cpp src/rom_mods.cpp src/upscale.cpp src/dlss.cpp)
 target_link_libraries(MarioPartyDS PRIVATE runtime game_code runtime SDL3::SDL3)
 target_compile_options(MarioPartyDS PRIVATE /W4 /WX /utf-8)
 target_compile_definitions(MarioPartyDS PRIVATE _CRT_SECURE_NO_WARNINGS
                            _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
 add_custom_command(TARGET MarioPartyDS POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL3::SDL3> $<TARGET_FILE_DIR:MarioPartyDS>)
+# NVIDIA DLSS SDK (NGX), in native/third_party/dlss (not committed; see its LICENSE.txt): headers, the
+# static-runtime library, and nvngx_dlss.dll next to the program.
+set(DLSS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dlss")
+target_include_directories(MarioPartyDS PRIVATE "${DLSS_DIR}/include")
+target_link_libraries(MarioPartyDS PRIVATE "${DLSS_DIR}/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib" d3d11)
+add_custom_command(TARGET MarioPartyDS POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${DLSS_DIR}/bin/nvngx_dlss.dll" $<TARGET_FILE_DIR:MarioPartyDS>)
+
 # The start screen's picture. It shows the game's characters, so it stays local (native/assets/ is
 # not committed); without it the start screen draws plain stripes.
 set(MENU_BACKGROUND "${CMAKE_CURRENT_SOURCE_DIR}/assets/menu_background.png")
