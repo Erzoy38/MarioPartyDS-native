@@ -691,7 +691,9 @@ int main(int argc, char** argv) {
     const int dlss_out_h = kScreenHeight * std::clamp(app.render_scale, 1, 12);
     if (g_texture_3d != nullptr && app.dlss != kDlssOff && dlss_available()) {
         unsigned w = 0, h = 0;
-        if (dlss_render_size(app.dlss, unsigned(dlss_out_w), unsigned(dlss_out_h), w, h)) {
+        // Below the DS's own 256 x 192 the 3D would be drawn coarser than the game's: not worth it.
+        if (dlss_render_size(app.dlss, unsigned(dlss_out_w), unsigned(dlss_out_h), w, h)
+            && w >= unsigned(kScreenWidth) && h >= unsigned(kScreenHeight)) {
             SDL_Texture* out = dlss_begin(renderer, app.dlss, int(w), int(h), dlss_out_w, dlss_out_h);
             if (out != nullptr) {
                 SDL_DestroyTexture(g_texture_3d);
@@ -704,7 +706,11 @@ int main(int argc, char** argv) {
                 use_dlss = true;
             }
         }
-        if (!use_dlss) std::printf("dlss: not used: %s\n", dlss_reason().c_str());
+        if (!use_dlss) {
+            std::printf("dlss: not used: %s\n", w > 0 && (w < unsigned(kScreenWidth) || h < unsigned(kScreenHeight))
+                                                    ? "its size would be below the DS's 256x192"
+                                                    : dlss_reason().c_str());
+        }
     }
     if (cpu_compose && display_picture) {  // the old way, for comparing: everything at the 3D resolution
         SDL_DestroyTexture(texture);

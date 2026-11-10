@@ -17,6 +17,8 @@ MarioPartyDS-server.exe   der Server, nur für den Host einer Online-Partie
 ONLINE.txt                Anleitung für das Spielen über das Internet
 LIZENZ.txt                Urheberrecht und was erlaubt ist
 SDL3-LICENSE.txt          Lizenz von SDL3
+nvngx_dlss.dll            NVIDIA DLSS (nur mit NVIDIA-RTX-Karte genutzt; ohne sie läuft alles wie bisher)
+nvngx_dlss.license.txt    Lizenz von NVIDIA DLSS
 textures\                 Ordner für Texturpakete, mit Anleitung
 mods\                     Ordner für Datei-Mods, mit Anleitung
 

@@ -544,8 +544,8 @@ private:
             Row upscale{"UPSCALING", kUpscaleNames[std::clamp(settings_.upscale, 0, 2)],
                         "How the 2D pictures (menus, characters, text) are made larger. Smooth edges: pixel art with "
                         "smooth diagonals, crisp lines. AMD FSR 1: edge-aware upscaling with sharpening, softer and "
-                        "more like a painting. Both run on the processor, on any PC; DLSS is not possible, it needs "
-                        "an NVIDIA card and a 3D engine this game does not have. Combine with 3D RESOLUTION."};
+                        "more like a painting. Both run on the processor, on any PC. For the 3D graphics see 3D "
+                        "RESOLUTION and NVIDIA DLSS below."};
             upscale.kind = Row::Kind::Choice;
             upscale.change = [this](int delta) {
                 settings_.upscale = (settings_.upscale + (delta == 0 ? 1 : delta) + 3) % 3;
@@ -558,9 +558,14 @@ private:
                 dlss_value = dlss_mode_name(settings_.dlss);
                 unsigned w = 0, h = 0;
                 const unsigned out_w = 256u * unsigned(settings_.render_scale), out_h = 192u * unsigned(settings_.render_scale);
-                if (settings_.dlss != kDlssOff && dlss_render_size(settings_.dlss, out_w, out_h, w, h)) {
-                    dlss_value += "  (" + std::to_string(w) + "x" + std::to_string(h) + " > " + std::to_string(out_w) + "x"
-                                  + std::to_string(out_h) + ")";
+                if (settings_.dlss == kDlssOff) {
+                } else if (settings_.render_scale <= 1 && !settings_.hd_textures) {
+                    dlss_value += "  (unused at 3D resolution 1x)";
+                } else if (dlss_render_size(settings_.dlss, out_w, out_h, w, h)) {
+                    // Main uses it only from the DS's own size up (see main.cpp).
+                    dlss_value += w < 256u || h < 192u ? "  (unused: below 256x192)"
+                                                       : "  (" + std::to_string(w) + "x" + std::to_string(h) + " > "
+                                                             + std::to_string(out_w) + "x" + std::to_string(out_h) + ")";
                 }
             }
             Row dlss{"NVIDIA DLSS", dlss_value,
