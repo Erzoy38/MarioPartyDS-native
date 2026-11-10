@@ -205,6 +205,7 @@ void draw_pointer(u8* picture, int s) {
                 pixel[0] = g_pad.touching ? 255 : 0;
                 pixel[1] = 0;
                 pixel[2] = g_pad.touching ? 0 : 255;
+                pixel[3] = 255;
             }
         }
     }
@@ -221,8 +222,41 @@ ScreenRects g_rects{};
 bool g_swapped = false;     // the top screen where the bottom one goes and the other way round (Tab)
 SDL_FRect g_touch_rect{};   // where the touch screen is shown
 
-// Both screens from the texture (the frame, top screen above the bottom one) where the layout puts
-// them; afterwards drawing is in the DS's 256 x 384 again, for the boxes over the game.
+// The 3D layer: the screen's high-resolution 3D picture, drawn on the graphics card between the
+// frame (below) and the frame's 2D parts (above, see-through where the game shows only 3D).
+SDL_Texture* g_texture_3d = nullptr;  // null: the frame alone, as one picture
+Ppu3dPlacement g_placement{};
+bool g_has_3d = false;
+
+// One DS screen at `place`: the frame below, the 3D picture, the frame's 2D parts on top.
+void draw_screen_layers(const SDL_FRect& frame_part, int screen, const SDL_FRect& place) {
+    if (g_texture_3d == nullptr) {
+        SDL_RenderTexture(g_renderer, g_texture, &frame_part, &place);
+        return;
+    }
+    SDL_SetTextureBlendMode(g_texture, SDL_BLENDMODE_NONE);
+    SDL_RenderTexture(g_renderer, g_texture, &frame_part, &place);
+    if (g_has_3d && g_placement.screen == screen) {
+        float w3 = 0, h3 = 0;
+        SDL_GetTextureSize(g_texture_3d, &w3, &h3);
+        const float k = w3 / float(kScreenWidth);  // 3D texels per DS pixel
+        const u32 s = g_placement.scroll & 0x1FF;
+        // Screen columns [first, first + count) show 3D columns from `from` on.
+        const float first = s < 256 ? 0.0f : float(512 - s);
+        const float count = s < 256 ? float(256 - s) : float(s - 256);
+        const float from = s < 256 ? float(s) : 0.0f;
+        if (count > 0) {
+            const SDL_FRect src{from * k, 0, count * k, h3};
+            const SDL_FRect dst{place.x + first / 256.0f * place.w, place.y, count / 256.0f * place.w, place.h};
+            SDL_RenderTexture(g_renderer, g_texture_3d, &src, &dst);
+        }
+    }
+    SDL_SetTextureBlendMode(g_texture, SDL_BLENDMODE_BLEND);
+    SDL_RenderTexture(g_renderer, g_texture, &frame_part, &place);
+}
+
+// Both screens where the layout puts them; afterwards drawing is in the DS's 256 x 384 again, for
+// the boxes over the game.
 void draw_screens() {
     SDL_SetRenderLogicalPresentation(g_renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
@@ -235,10 +269,63 @@ void draw_screens() {
     const SDL_FRect top{0, 0, tw, th / 2}, bottom{0, th / 2, tw, th / 2};
     const SDL_FRect& top_place = g_swapped ? g_rects.bottom : g_rects.top;
     const SDL_FRect& bottom_place = g_swapped ? g_rects.top : g_rects.bottom;
-    SDL_RenderTexture(g_renderer, g_texture, &top, &top_place);
-    SDL_RenderTexture(g_renderer, g_texture, &bottom, &bottom_place);
+    draw_screen_layers(top, 0, top_place);
+    draw_screen_layers(bottom, 1, bottom_place);
     g_touch_rect = bottom_place;
     SDL_SetRenderLogicalPresentation(g_renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+}
+
+// --compare-compose: draws the layers into a picture of (256 x 384) times `s`, reads it back and
+// counts the pixels that differ from the processor's composition. Logged; for checking.
+void compare_compose(int s) {
+    std::vector<u8> cpu;
+    int scale = 1;
+    if (!ppu_compose_display(cpu, scale) || scale != s) return;
+    const int w = kWidth * s, h = kHeight * s;
+    SDL_Texture* target = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_TARGET, w, h);
+    if (target == nullptr) return;
+    SDL_Texture* previous = SDL_GetRenderTarget(g_renderer);
+    SDL_SetRenderTarget(g_renderer, target);
+    SDL_SetRenderLogicalPresentation(g_renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
+    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(g_renderer);
+    float tw = 0, th = 0;
+    SDL_GetTextureSize(g_texture, &tw, &th);
+    draw_screen_layers({0, 0, tw, th / 2}, 0, {0, 0, float(w), float(h) / 2});
+    draw_screen_layers({0, th / 2, tw, th / 2}, 1, {0, float(h) / 2, float(w), float(h) / 2});
+    SDL_Surface* read = SDL_RenderReadPixels(g_renderer, nullptr);
+    SDL_SetRenderTarget(g_renderer, previous);
+    SDL_SetRenderLogicalPresentation(g_renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    SDL_DestroyTexture(target);
+    if (read == nullptr) return;
+    SDL_Surface* rgba = SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32);
+    SDL_DestroySurface(read);
+    if (rgba == nullptr) return;
+    long long differ = 0;
+    for (int y = 0; y < h; ++y) {
+        const u8* g = static_cast<const u8*>(rgba->pixels) + size_t(y) * size_t(rgba->pitch);
+        const u8* c = &cpu[size_t(y) * size_t(w) * 4];
+        for (int x = 0; x < w; ++x) {
+            if (g[x * 4] != c[x * 4] || g[x * 4 + 1] != c[x * 4 + 1] || g[x * 4 + 2] != c[x * 4 + 2]) ++differ;
+        }
+    }
+    SDL_DestroySurface(rgba);
+    std::printf("compare compose: %lld of %d pixels differ\n", differ, w * h);
+}
+
+// The frame (RGBA, (256 x 384) times `f`) see-through where the game shows only 3D.
+void mask_pure_3d(std::vector<u8>& frame, int f) {
+    const u16* map = ppu_frame_map();
+    const size_t w = size_t(kWidth) * size_t(f);
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const u8 alpha = map[size_t(y) * kWidth + size_t(x)] == 0xFFFF ? 255 : 0;
+            for (int j = 0; j < f; ++j) {
+                u8* p = &frame[((size_t(y) * size_t(f) + size_t(j)) * w + size_t(x) * size_t(f)) * 4 + 3];
+                for (int i = 0; i < f; ++i, p += 4) *p = alpha;
+            }
+        }
+    }
 }
 
 // The mouse on the touch screen, in DS pixels; false when it is elsewhere.
@@ -344,6 +431,8 @@ int main(int argc, char** argv) {
     std::string rom_path, save_arg, screenshot, settings_arg;
     int scale = -1;
     bool fullscreen = false, smoke_test = false, local = false, force_menu = false;
+    bool cpu_compose = false;  // --cpu-compose: the frame put together on the processor, as before
+    int compare_every = 0;     // --compare-compose N: every N pictures, graphics card against processor
     long long frame_limit = -1;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -356,6 +445,8 @@ int main(int argc, char** argv) {
         else if (arg == "--save" && i + 1 < argc) save_arg = argv[++i];
         else if (arg == "--screenshot" && i + 1 < argc) screenshot = argv[++i];
         else if (arg == "--settings" && i + 1 < argc) settings_arg = argv[++i];
+        else if (arg == "--cpu-compose") cpu_compose = true;
+        else if (arg == "--compare-compose" && i + 1 < argc) compare_every = std::atoi(argv[++i]);
         else if (arg == "--force-mode" && i + 1 < argc) machine_force_mode(int(std::strtol(argv[++i], nullptr, 0)));
         else if (arg.rfind("--", 0) != 0) rom_path = arg;
     }
@@ -376,9 +467,13 @@ int main(int argc, char** argv) {
     SDL_Renderer* renderer = nullptr;
     const int first_w = use_menu ? kStartWindowWidth : kWidth * scale;
     const int first_h = use_menu ? kStartWindowHeight : kHeight * scale;
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d11");
     if (!SDL_CreateWindowAndRenderer("Mario Party DS", first_w, first_h, SDL_WINDOW_RESIZABLE, &window, &renderer)) {
-        std::printf("window failed: %s\n", SDL_GetError());
-        return 1;
+        SDL_ResetHint(SDL_HINT_RENDER_DRIVER);  // no Direct3D 11: whatever SDL has
+        if (!SDL_CreateWindowAndRenderer("Mario Party DS", first_w, first_h, SDL_WINDOW_RESIZABLE, &window, &renderer)) {
+            std::printf("window failed: %s\n", SDL_GetError());
+            return 1;
+        }
     }
     SDL_SetRenderLogicalPresentation(renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
     const auto in_window = [&] { return (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) == 0; };
@@ -531,17 +626,40 @@ int main(int argc, char** argv) {
     const bool display_picture = app.render_scale > 1 || app.hd_textures;
     // The upscaler makes the 2D pixels larger to the 3D resolution, or 4 times on its own.
     const bool upscaling = app.upscale != 0 && (!display_picture || app.render_scale > 1);
-    const int shown_scale = display_picture ? app.render_scale : (upscaling ? 4 : 1);
+    // With the 3D layer on the graphics card the frame only needs the upscaler's own size: FSR makes
+    // 2x, Scale2x up to 4x; the card enlarges the rest. Without the 3D layer, 4x as before.
+    const int shown_scale = display_picture ? (upscaling ? (app.upscale == kUpscaleFsr ? 2 : std::min(app.render_scale, 4)) : 1)
+                                            : (upscaling ? 4 : 1);
     // Frame rate: the game always makes 60 pictures; 30 shows every second one, above 60 each picture
     // waits for the display's refresh (VSync).
     if (app.frame_rate > 60) SDL_SetRenderVSync(renderer, 1);
     const int show_every = app.frame_rate == 30 ? 2 : 1;
+    // The old way puts the upscaled frame together with the 3D picture at the 3D resolution.
+    const int upscale_factor = (cpu_compose && display_picture) ? app.render_scale : shown_scale;
     if (shown_scale != 1) {
         SDL_DestroyTexture(texture);
         texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, kWidth * shown_scale,
                                     kHeight * shown_scale);
     }
     SDL_SetTextureScaleMode(texture, app.smooth ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+    if (display_picture && !cpu_compose) {
+        const int s3 = std::clamp(app.render_scale, 1, 12);
+        g_texture_3d = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, kScreenWidth * s3,
+                                         kScreenHeight * s3);
+        SDL_SetTextureBlendMode(g_texture_3d, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(g_texture_3d, app.smooth ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+    }
+    if (cpu_compose && display_picture) {  // the old way, for comparing: everything at the 3D resolution
+        SDL_DestroyTexture(texture);
+        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, kWidth * app.render_scale,
+                                    kHeight * app.render_scale);
+        SDL_SetTextureScaleMode(texture, app.smooth ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+    }
+    {
+        const char* name = SDL_GetRendererName(renderer);
+        std::printf("renderer: %s, %s\n", name ? name : "?",
+                    g_texture_3d ? "3D layer on the graphics card" : "frame as one picture");
+    }
     settings.player_name = app.name;
     settings.language = u8(app.language);
 
@@ -605,6 +723,7 @@ int main(int argc, char** argv) {
     std::vector<u8> upscaled;  // the game's frame made larger, for the parts without 3D
     std::vector<u8> upscale_work, upscale_source(picture.size());  // the upscaler's own, while it runs
     std::future<void> upscale_job;
+    std::vector<u8> layer_3d;  // the 3D picture for the graphics card
 
     while (running && frame_limit != frames) {
         SDL_Event event;
@@ -711,18 +830,31 @@ int main(int argc, char** argv) {
                     upscale_job.wait();
                 } else {  // the very first picture: made here, before any job runs
                     std::memcpy(upscale_source.data(), ppu_frame(), upscale_source.size());
-                    upscale_picture(upscale_source.data(), shown_scale, app.upscale, upscale_work);
+                    upscale_picture(upscale_source.data(), upscale_factor, app.upscale, upscale_work);
                 }
                 upscaled.swap(upscale_work);
                 std::memcpy(upscale_source.data(), ppu_frame(), upscale_source.size());
-                upscale_job = std::async(std::launch::async, [&upscale_source, &upscale_work, shown_scale, mode = app.upscale] {
-                    upscale_picture(upscale_source.data(), shown_scale, mode, upscale_work);
+                upscale_job = std::async(std::launch::async, [&upscale_source, &upscale_work, upscale_factor, mode = app.upscale] {
+                    upscale_picture(upscale_source.data(), upscale_factor, mode, upscale_work);
                 });
             }
-            if (display_picture) {
+            if (display_picture && g_texture_3d != nullptr) {
+                // The graphics card puts it together: the frame (masked where only 3D shows) and
+                // the 3D picture.
+                int s3 = 1;
+                g_has_3d = ppu_3d_layer(layer_3d, s3);
+                g_placement = ppu_3d_placement();
+                if (g_has_3d) SDL_UpdateTexture(g_texture_3d, nullptr, layer_3d.data(), kScreenWidth * s3 * 4);
+                if (upscaling) shown = upscaled;
+                else shown.assign(ppu_frame(), ppu_frame() + picture.size());
+                mask_pure_3d(shown, shown_scale);
+                draw_pointer(shown.data(), shown_scale);
+                SDL_UpdateTexture(texture, nullptr, shown.data(), kWidth * shown_scale * 4);
+                if (compare_every > 0 && frames % compare_every == 0 && !upscaling) compare_compose(app.render_scale);
+            } else if (display_picture) {
                 int s = 1;
                 ppu_compose_display(shown, s, upscaling ? upscaled.data() : nullptr);
-                if (s == shown_scale) {
+                if (s == app.render_scale) {
                     draw_pointer(shown.data(), s);
                     SDL_UpdateTexture(texture, nullptr, shown.data(), kWidth * s * 4);
                 }

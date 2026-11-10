@@ -498,6 +498,11 @@ void merge_layers(const Engine& e, u32 dispcnt, const u8* mask, u8* rgba, u16* m
     }
 }
 
+// Where the 3D picture went this line: set by render_engine for engine A, read by ppu_render_line.
+bool g_3d_this_line = false;
+u32 g_3d_scroll_back = 0, g_3d_scroll_front = 0;
+int g_3d_screen_back = -1, g_3d_screen_front = -1;  // 0 top, 1 bottom, -1 no 3D in the frame
+
 void render_engine(Engine& e, u32 line, u8* rgba, u16* map, u8* master_row) {
     std::fill(map, map + kScreenWidth, u16(0xFFFF));
     *master_row = 0;
@@ -532,6 +537,8 @@ void render_engine(Engine& e, u32 line, u8* rgba, u16* map, u8* master_row) {
         ++g_gaps.lines_with_3d;
         const u32* source = gpu3d_line(line);
         const u32 scroll = reg16(e, 0x10) & 0x1FF;
+        g_3d_this_line = true;
+        g_3d_scroll_back = scroll;
         for (u32 x = 0; x < kScreenWidth; ++x) {
             const u32 pixel = source[(x + scroll) & 0x1FF & 0xFF];
             if ((x + scroll) & 0x100) continue;  // beyond the 256 pixels of the picture
@@ -649,9 +656,12 @@ void ppu_render_line(u32 line) {
     if (line == 0) {
         g_capture_running = capture & 0x80000000u;
         g_display_back = gpu3d_display_index();
+        g_3d_screen_back = -1;
     }
+    g_3d_this_line = false;
     render_engine(g_engines[0], line, a_on_top ? top : bottom, a_on_top ? map_top : map_bottom,
                   a_on_top ? master_top : master_bottom);
+    if (g_3d_this_line) g_3d_screen_back = a_on_top ? 0 : 1;
     render_engine(g_engines[1], line, a_on_top ? bottom : top, a_on_top ? map_bottom : map_top,
                   a_on_top ? master_bottom : master_top);
     if (g_capture_running) capture_line(line, capture);
@@ -662,6 +672,8 @@ void ppu_finish_frame() {
     std::memcpy(g_map_front, g_map_back, sizeof g_map_front);
     std::memcpy(g_master_front, g_master_back, sizeof g_master_front);
     g_display_front = g_display_back;
+    g_3d_screen_front = g_3d_screen_back;
+    g_3d_scroll_front = g_3d_scroll_back;
     if (g_capture_running) {
         g_capture_running = false;
         g_machine.io[0x67] &= 0x7F;  // finished: the enable bit clears itself
@@ -669,6 +681,50 @@ void ppu_finish_frame() {
 }
 
 const u8* ppu_frame() { return g_front; }
+
+const u16* ppu_frame_map() { return g_map_front; }
+
+Ppu3dPlacement ppu_3d_placement() { return {g_3d_screen_front, g_3d_scroll_front}; }
+
+bool ppu_3d_layer(std::vector<u8>& out, int& scale) {
+    scale = gpu3d_display_scale();
+    const u32* picture = gpu3d_display_picture(g_display_front);
+    if (picture == nullptr || g_3d_screen_front < 0) return false;
+    const int s = scale;
+    const size_t w = size_t(kScreenWidth) * size_t(s), h = size_t(kScreenHeight) * size_t(s);
+    out.resize(w * h * 4);
+    const auto rows = [&](size_t first, size_t last) {
+        for (size_t y = first; y < last; ++y) {
+            const u32 master = g_master_front[size_t(g_3d_screen_front) * kScreenHeight + y / size_t(s)];
+            const u32 mode = master >> 5, factor = master & 31;
+            const u32* in = picture + y * w;
+            u8* o = &out[y * w * 4];
+            for (size_t x = 0; x < w; ++x, o += 4) {
+                const u32 p = in[x];
+                if (((p >> 18) & 31) == 0) {
+                    o[0] = o[1] = o[2] = o[3] = 0;
+                    continue;
+                }
+                u32 c[3] = {p & 63, (p >> 6) & 63, (p >> 12) & 63};
+                for (u32& v : c) {
+                    if (mode == 1) v += ((63 - v) * factor) >> 4;
+                    else if (mode == 2) v -= (v * factor + 15) >> 4;
+                }
+                o[0] = u8((c[0] << 2) | (c[0] >> 4));
+                o[1] = u8((c[1] << 2) | (c[1] >> 4));
+                o[2] = u8((c[2] << 2) | (c[2] >> 4));
+                o[3] = 255;
+            }
+        }
+    };
+    const int threads = std::max(1, std::min(8, int(std::thread::hardware_concurrency())));
+    std::vector<std::thread> workers;
+    const size_t step = (h + size_t(threads) - 1) / size_t(threads);
+    for (size_t first = step; first < h; first += step) workers.emplace_back(rows, first, std::min(h, first + step));
+    rows(0, std::min(h, step));
+    for (std::thread& t : workers) t.join();
+    return true;
+}
 
 bool ppu_compose_display(std::vector<u8>& out, int& scale, const u8* upscaled) {
     scale = gpu3d_display_scale();

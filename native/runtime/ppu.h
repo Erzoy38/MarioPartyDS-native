@@ -23,6 +23,21 @@ const u8* ppu_frame();
 // pixels that do not come from the 3D picture.
 bool ppu_compose_display(std::vector<u8>& out, int& scale, const u8* upscaled = nullptr);
 
+// --- The last frame in layers, for putting it together on the graphics card ---
+// Per pixel of the frame (256 x 384): the 3D column it shows alone, or 0xFFFF where the frame's own
+// pixel counts (2D, blended 3D, or no 3D).
+const u16* ppu_frame_map();
+// Which screen showed the 3D picture (0 top, 1 bottom, -1 none) and its horizontal scroll (9 bits:
+// screen column x shows 3D column (x + scroll) & 0x1FF, nothing where that is 256 or more).
+struct Ppu3dPlacement {
+    int screen = -1;
+    u32 scroll = 0;
+};
+Ppu3dPlacement ppu_3d_placement();
+// The screen's 3D picture of the last frame as RGBA, (256 x 192) times `scale`, with the master
+// brightness of each line applied; alpha 255 where it has something, 0 elsewhere. False if none.
+bool ppu_3d_layer(std::vector<u8>& out, int& scale);
+
 // How many lines used 3D and display capture, so a test can tell what it actually exercised.
 struct PpuGaps {
     u64 lines_with_3d = 0;
