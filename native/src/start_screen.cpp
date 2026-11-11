@@ -623,13 +623,18 @@ private:
             // Off, Windows' default, then every recording device that is connected now.
             std::vector<std::string> choices{kMicOff, ""};
             for (const std::string& name : Microphone::devices()) choices.push_back(name);
-            std::string shown = settings_.mic_device == kMicOff ? "Off (Space key only)"
-                                : settings_.mic_device.empty() ? "Windows default"
+            std::string shown = settings_.mic_device == kMicOff
+                                    ? (platform::kMobile ? "Off" : "Off (Space key only)")
+                                : settings_.mic_device.empty() ? (platform::kMobile ? "Device default" : "Windows default")
                                                                : settings_.mic_device;
             Row device{"MICROPHONE", shown,
-                       "Which microphone the game listens to: the PC's, a headset's or a controller's. A PS5 "
-                       "controller (DualSense) shows up here when it is connected with a USB cable; over Bluetooth "
-                       "Windows gets no sound from it. Space and the left trigger always blow at full strength."};
+                       platform::kMobile
+                           ? "Which microphone the game listens to. The first time it listens, the system asks whether "
+                             "the game may use the microphone; without it the game hears nothing. A controller's left "
+                             "trigger always blows at full strength."
+                           : "Which microphone the game listens to: the PC's, a headset's or a controller's. A PS5 "
+                             "controller (DualSense) shows up here when it is connected with a USB cable; over Bluetooth "
+                             "Windows gets no sound from it. Space and the left trigger always blow at full strength."};
             device.kind = Row::Kind::Choice;
             device.change = [this, choices](int delta) {
                 const auto at = std::find(choices.begin(), choices.end(), settings_.mic_device);

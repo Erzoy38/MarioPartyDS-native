@@ -198,9 +198,27 @@ Ursprünglicher Plan:
 - **App-Wechsel:** Im Hintergrund hält das Spiel an, der Ton pausiert, und der Spielstand wird geschrieben.
 
 ### Phase 5: Ton
-- Die Puffergröße kommt über `SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES`, die Latenz wird gemessen.
-- Ton-Aussetzer werden im Dauerlauf gezählt.
-- Für das Mikrofon braucht Android `RECORD_AUDIO`, iOS `NSMicrophoneUsageDescription`.
+Stand: umgesetzt (unter Windows geprüft, auf Android nur gebaut).
+- **Gerätepuffer:** Auf Handys setzt `main.cpp` vor `SDL_Init` `SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES=256`
+  (bei 48 kHz etwa 5 ms statt SDLs 20 ms). AAudio läuft bei SDL ohnehin im Modus `LOW_LATENCY`
+  (`SDL_HINT_ANDROID_LOW_LATENCY_AUDIO`, Vorgabe an). Windows behält SDLs Vorgabe.
+- **Warteschlange (`SoundOut` in `main.cpp`):** Das Spiel liefert je Bild etwa 16,7 ms Ton. Unter Windows
+  wie bisher: Ab 250 ms Wartendem wird ein Bild Ton verworfen. Auf Handys höchstens 100 ms; ist die
+  Warteschlange ganz leer (Aussetzer), kommen zuerst zwei Bilder Stille dazu, damit ein etwas spätes Bild
+  nicht gleich den nächsten Aussetzer macht.
+- **Messung:** Alle 10 s eine Zeile `sound:` im Log mit mittlerer, kleinster und größter Wartezeit,
+  Gerätepuffer, Aussetzern und verworfenen Bildern. Auf Handys immer, unter Windows mit `--audio-stats`.
+  Windows, 2400 Bilder: etwa 10 ms in der Warteschlange plus 441 Frames (10 ms) Gerätepuffer, 0 Aussetzer,
+  0 verworfen.
+- **Mikrofon:** `RECORD_AUDIO` steht im Manifest. Die Abfrage zur Laufzeit macht SDL selbst beim ersten
+  Öffnen eines Aufnahmegeräts (`SDL_aaudio.c`, `SDL_RequestAndroidPermission`); das Spiel wartet so lange.
+  Abgelehnt: Das Spiel hört nichts, Einstellungen zeigen „no microphone“. Auf dem Handy erklärt der
+  Einstellungstext das, ohne Windows- und Leertasten-Hinweise. iOS: `NSMicrophoneUsageDescription` kommt mit
+  der `Info.plist` in Phase 6.
+- **Windows:** Spielbild nach 2400 Bildern gleich (`ADF748D445B5A938`), mit und ohne `--audio-stats`;
+  `--smoke-test` läuft.
+- **Offen:** Latenz und Aussetzer auf einem echten Gerät messen (Log lesen). Falls 256 Frames auf einem
+  Gerät knacken, ist der nächste Schritt 512.
 
 ### Phase 6: iOS
 - **CMake:** mit `CMAKE_SYSTEM_NAME=iOS`. `cmake -G Xcode` erzeugt daraus auf dem Mac das Xcode-Projekt.

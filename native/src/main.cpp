@@ -54,6 +54,73 @@ constexpr int kStartWindowWidth = 1280;  // the start screen's window, 16:9
 constexpr int kStartWindowHeight = 720;
 constexpr double kFramesPerSecond = 59.8261;  // the DS's picture rate
 
+bool g_audio_stats = false;  // --audio-stats: the sound's delay and gaps in the log (always on phones)
+
+// Gives the game's samples to the sound device, a picture's worth at a time.
+// Windows: as before, a batch is dropped when over a quarter second is waiting.
+// Phones: at most 100 ms may wait; when the device has played everything (a gap), two pictures
+// of silence go first, so that a picture that comes a little late does not make the next gap.
+struct SoundOut {
+    static constexpr int kBytesPerSecond = int(kSoundRate) * 2 * int(sizeof(s16));
+    SDL_AudioStream* stream = nullptr;
+    // Measurement, per report: the waiting sound before each batch, gaps and dropped batches.
+    long long batches = 0, gaps = 0, dropped = 0, gaps_total = 0;
+    int least = INT32_MAX, most = 0;
+    long long sum = 0;
+    Uint64 last_report = 0;
+    bool started = false;  // the first batch is no gap
+
+    void feed(const std::vector<s16>& samples) {
+        if (stream == nullptr || samples.empty()) return;
+        const int bytes = int(samples.size() * sizeof(s16));
+        const int queued = SDL_GetAudioStreamQueued(stream);
+        least = std::min(least, queued);
+        most = std::max(most, queued);
+        sum += queued;
+        ++batches;
+        const int limit = platform::kMobile ? kBytesPerSecond / 10 : int(kSoundRate);
+        if (queued >= limit) {
+            ++dropped;
+        } else {
+            if (platform::kMobile && queued == 0) {
+                if (started) ++gaps;
+                static const std::vector<s16> silence(size_t(kBytesPerSecond / 30 / 4 * 2), 0);
+                SDL_PutAudioStreamData(stream, silence.data(), int(silence.size() * sizeof(s16)));
+            } else if (queued == 0 && started) {
+                ++gaps;
+            }
+            SDL_PutAudioStreamData(stream, samples.data(), bytes);
+            started = true;
+        }
+        report(false);
+    }
+
+    void report(bool last) {
+        if (!(g_audio_stats || platform::kMobile) || batches == 0) return;
+        const Uint64 now = SDL_GetTicks();
+        if (last_report == 0) last_report = now;
+        if (!last && now - last_report < 10000) return;
+        last_report = now;
+        gaps_total += gaps;
+        // The device's own buffer comes on top of what waits in the stream.
+        SDL_AudioSpec spec{};
+        int device_frames = 0;
+        const SDL_AudioDeviceID device = SDL_GetAudioStreamDevice(stream);
+        const bool known = device != 0 && SDL_GetAudioDeviceFormat(device, &spec, &device_frames) && spec.freq > 0;
+        const double ms = 1000.0 / kBytesPerSecond;
+        std::printf("sound: waiting %.1f ms on average (%.1f to %.1f), device buffer %s, gaps %lld (%lld in all), "
+                    "dropped %lld of %lld\n",
+                    double(sum) / double(batches) * ms, least * ms, most * ms,
+                    known ? (std::to_string(device_frames) + " frames at " + std::to_string(spec.freq) + " Hz").c_str()
+                          : "unknown",
+                    gaps, gaps_total, dropped, batches);
+        std::fflush(stdout);
+        batches = gaps = dropped = sum = 0;
+        least = INT32_MAX;
+        most = 0;
+    }
+};
+
 u32 keyboard_keys() {
     const bool* state = SDL_GetKeyboardState(nullptr);
     struct Binding { SDL_Scancode scancode; u32 key; };
@@ -531,12 +598,16 @@ int main(int argc, char** argv) {
         else if (arg == "--settings" && i + 1 < argc) settings_arg = argv[++i];
         else if (arg == "--cpu-compose") cpu_compose = true;
         else if (arg == "--touch-controls") touch_controls = true;
+        else if (arg == "--audio-stats") g_audio_stats = true;
         else if (arg == "--compare-compose" && i + 1 < argc) compare_every = std::atoi(argv[++i]);
         else if (arg == "--force-mode" && i + 1 < argc) machine_force_mode(int(std::strtol(argv[++i], nullptr, 0)));
         else if (arg.rfind("--", 0) != 0) rom_path = arg;
     }
 
     if (touch_controls && !platform::kMobile) SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
+    // Phones: a small device buffer (256 frames, about 5 ms at 48 kHz) instead of SDL's 20 ms;
+    // Windows keeps SDL's default, as before.
+    if (platform::kMobile) SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "256");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         std::printf("SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -844,6 +915,8 @@ int main(int argc, char** argv) {
     Microphone microphone;
     microphone.open(app.mic_device);
     std::vector<s16> samples;
+    SoundOut sound_out;
+    sound_out.stream = audio;
 
     const u64 ticks_per_frame = u64(double(SDL_GetPerformanceFrequency()) / kFramesPerSecond);
     u64 next_frame = SDL_GetPerformanceCounter();
@@ -910,6 +983,7 @@ int main(int argc, char** argv) {
             if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
                 if (audio != nullptr) {
                     SDL_ClearAudioStream(audio);
+                    sound_out.started = false;  // the empty stream after the pause is no gap
                     SDL_ResumeAudioStreamDevice(audio);
                 }
                 next_frame = SDL_GetPerformanceCounter();
@@ -981,13 +1055,8 @@ int main(int argc, char** argv) {
         }
 
         sound_take_samples(samples);
-        if (audio != nullptr && !samples.empty()) {
-            // Over a quarter of a second behind means the game ran ahead: drop rather than lag.
-            const int queued = SDL_GetAudioStreamQueued(audio);
-            if (queued < int(kSoundRate)) {
-                SDL_PutAudioStreamData(audio, samples.data(), int(samples.size() * sizeof(s16)));
-            }
-        }
+        // Too much waiting means the game ran ahead: drop rather than lag (SoundOut).
+        sound_out.feed(samples);
 
         // Writes shortly after the game stops changing its save, not in the middle of a save.
         if (machine_save_changed()) frames_since_change = 0;
@@ -1105,6 +1174,7 @@ int main(int argc, char** argv) {
     std::printf("frames %lld, ended normally\n", frames);
     // Online, the others are told; the machine cannot be booted twice in one process, so the menu
     // comes back as a new one.
+    sound_out.report(true);
     if (online) net_leave();
     if (back_to_menu) restart_with_menu(rom_path);
     microphone.close();  // before SDL ends, or closing it later reaches into nothing
