@@ -2,6 +2,10 @@
 
 #include <SDL3/SDL.h>
 
+#ifdef __ANDROID__
+#include <jni.h>
+#endif
+
 namespace platform {
 
 namespace {
@@ -53,6 +57,27 @@ std::string keep_rom(const std::string& chosen, std::string& error) {
         }
         return kept_text;
     }
+}
+
+bool restart_app() {
+#ifdef __ANDROID__
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());  // a local reference
+    if (env == nullptr || activity == nullptr) return false;
+    bool started = false;
+    jclass type = env->GetObjectClass(activity);
+    const jmethodID restart = env->GetMethodID(type, "restartApp", "()V");
+    if (restart != nullptr) {
+        env->CallVoidMethod(activity, restart);
+        started = !env->ExceptionCheck();
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(type);
+    env->DeleteLocalRef(activity);
+    return started;
+#else
+    return false;
+#endif
 }
 
 const char* preferred_render_driver() {

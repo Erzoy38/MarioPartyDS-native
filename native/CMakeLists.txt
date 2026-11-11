@@ -80,7 +80,7 @@ endif()
 
 # The game with its window. Shared parts first, then what each platform has of its own.
 set(MPDS_APP_SOURCES src/main.cpp src/launcher.cpp src/start_screen.cpp src/ui.cpp src/display.cpp
-    src/microphone.cpp src/rom_mods.cpp src/upscale.cpp src/platform.cpp)
+    src/microphone.cpp src/rom_mods.cpp src/upscale.cpp src/platform.cpp src/touch_controls.cpp)
 # Text: Windows' fonts through GDI, elsewhere Noto Sans with stb_truetype. -DMPDS_TEXT=font on
 # Windows shows the phones' text here, to compare.
 if(WIN32)

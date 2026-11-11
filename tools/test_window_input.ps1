@@ -8,6 +8,7 @@
 #   click=X;Y      pixels on the DS's bottom screen (0..255, 0..191)
 #   tap=X;Y        pixels on both screens together (0..255, 0..383), for the online menu
 #   start=X;Y      pixels on the start screen (0..1023, 0..575)
+#   pixel=X;Y      pixels of the window's inside, for the on-screen controls (--touch-controls)
 #   shot=FILE.png  a picture of the window
 #   until=TEXT     waits up to 60 s until the log (next to -ExtraArgs' --settings file) holds TEXT
 param([string]$Steps, [int]$Frames = 1500, [string]$Out = "run\window_input.rgba", [string]$Save = "run\window_input.sav",
@@ -129,6 +130,11 @@ try {
         } elseif ($name -eq "tap") {
             $x, $y = $value -split ";"
             Send-Click $w ([int]$x) ([int]$y)
+        } elseif ($name -eq "pixel") {
+            $x, $y = $value -split ";"
+            $inside = New-Object Win+RECT
+            [void][Win]::GetClientRect($w, [ref]$inside)
+            Send-Click $w ([int]$x) ([int]$y) $inside.R $inside.B
         } elseif ($name -eq "start") {
             $x, $y = $value -split ";"
             Send-Click $w ([int]$x) ([int]$y) 1024 576

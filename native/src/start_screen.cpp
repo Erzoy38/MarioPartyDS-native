@@ -273,6 +273,7 @@ private:
                         case SDL_SCANCODE_PAGEDOWN: in.tab_right = true; break;
                         case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: in.activate = true; break;
                         case SDL_SCANCODE_ESCAPE: in.back = true; break;
+                        case SDL_SCANCODE_AC_BACK: in.back = in.back || platform::kMobile; break;  // Android's back button
                         case SDL_SCANCODE_BACKSPACE: in.backspace = true; break;
                         case SDL_SCANCODE_X: if (editing_ < 0) in.activate = true; break;
                         case SDL_SCANCODE_Z: if (editing_ < 0) in.back = true; break;

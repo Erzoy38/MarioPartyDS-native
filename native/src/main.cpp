@@ -17,6 +17,7 @@
 #include <SDL3/SDL_main.h>
 
 #include "display.h"
+#include "ds_keys.h"
 #include "dlss.h"
 #include "gpu3d.h"
 #include "hw.h"
@@ -30,6 +31,8 @@
 #include "ppu.h"
 #include "sound.h"
 #include "start_screen.h"
+#include "touch_controls.h"
+#include "ui.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -39,6 +42,7 @@
 #include <fstream>
 #include <functional>
 #include <future>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -49,12 +53,6 @@ constexpr int kHeight = kScreenHeight * 2;
 constexpr int kStartWindowWidth = 1280;  // the start screen's window, 16:9
 constexpr int kStartWindowHeight = 720;
 constexpr double kFramesPerSecond = 59.8261;  // the DS's picture rate
-
-// DS key bits, in the order the hardware uses.
-enum Key : u32 {
-    kA = 1, kB = 2, kSelect = 4, kStart = 8, kRight = 0x10, kLeft = 0x20, kUp = 0x40, kDown = 0x80,
-    kR = 0x100, kL = 0x200, kX = 0x400, kY = 0x800,
-};
 
 u32 keyboard_keys() {
     const bool* state = SDL_GetKeyboardState(nullptr);
@@ -223,6 +221,9 @@ int g_layout = kLayoutStacked, g_aspect = kAspect4x3;
 ScreenRects g_rects{};
 bool g_swapped = false;     // the top screen where the bottom one goes and the other way round (Tab)
 SDL_FRect g_touch_rect{};   // where the touch screen is shown
+// The on-screen controls: on phones and tablets, on Windows with --touch-controls (for testing,
+// the mouse as a finger). Null otherwise; then everything is as it was before them.
+TouchControls* g_controls = nullptr;
 
 // The 3D layer: the screen's high-resolution 3D picture, drawn on the graphics card between the
 // frame (below) and the frame's 2D parts (above, see-through where the game shows only 3D).
@@ -267,6 +268,30 @@ void draw_screen_layers(const SDL_FRect& frame_part, int screen, const SDL_FRect
     SDL_RenderTexture(g_renderer, g_texture, &frame_part, &place);
 }
 
+// With the on-screen controls: the screens inside the safe area (notch, camera hole, rounded
+// corners), in portrait one above the other at the top with the controls below, in landscape as
+// the settings say with the controls at the sides.
+void place_screens_for_controls(int ow, int oh) {
+    SDL_Rect safe_window{};
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(g_window, &ww, &wh);
+    SDL_FRect safe{0, 0, float(ow), float(oh)};
+    if (SDL_GetWindowSafeArea(g_window, &safe_window) && ww > 0 && wh > 0 && safe_window.w > 0 && safe_window.h > 0) {
+        const float kx = float(ow) / float(ww), ky = float(oh) / float(wh);
+        safe = {float(safe_window.x) * kx, float(safe_window.y) * ky, float(safe_window.w) * kx, float(safe_window.h) * ky};
+    }
+    g_controls->set_output(float(ow), float(oh), safe);
+    const SDL_FRect area = g_controls->screen_area();
+    const bool portrait = g_controls->portrait();
+    g_rects = screen_rects(area.w, area.h, portrait ? int(kLayoutStacked) : g_layout, g_aspect);
+    // In portrait the screens sit at the top of their part, not in its middle.
+    const float lift = portrait ? std::min(g_rects.top.y, g_rects.bottom.y) : 0.0f;
+    for (SDL_FRect* r : {&g_rects.top, &g_rects.bottom}) {
+        r->x += area.x;
+        r->y += area.y - lift;
+    }
+}
+
 // Both screens where the layout puts them; afterwards drawing is in the DS's 256 x 384 again, for
 // the boxes over the game.
 void draw_screens() {
@@ -275,7 +300,11 @@ void draw_screens() {
     SDL_RenderClear(g_renderer);
     int ow = 0, oh = 0;
     SDL_GetCurrentRenderOutputSize(g_renderer, &ow, &oh);
-    g_rects = screen_rects(float(ow), float(oh), g_layout, g_aspect);
+    if (g_controls != nullptr) {
+        place_screens_for_controls(ow, oh);
+    } else {
+        g_rects = screen_rects(float(ow), float(oh), g_layout, g_aspect);
+    }
     float tw = 0, th = 0;
     SDL_GetTextureSize(g_texture, &tw, &th);
     const SDL_FRect top{0, 0, tw, th / 2}, bottom{0, th / 2, tw, th / 2};
@@ -284,6 +313,15 @@ void draw_screens() {
     draw_screen_layers(top, 0, top_place);
     draw_screen_layers(bottom, 1, bottom_place);
     g_touch_rect = bottom_place;
+    if (g_controls != nullptr) g_controls->set_touch_screen(bottom_place);
+    SDL_SetRenderLogicalPresentation(g_renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+}
+
+// The on-screen controls over the picture, in the output's pixels.
+void draw_controls(ui::Text& text) {
+    if (g_controls == nullptr) return;
+    SDL_SetRenderLogicalPresentation(g_renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
+    g_controls->draw(g_renderer, text);
     SDL_SetRenderLogicalPresentation(g_renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
 }
 
@@ -356,8 +394,8 @@ bool mouse_on_touch_screen(float window_x, float window_y, float& x, float& y) {
 
 // Starts this program again with the menu, after the game has ended.
 void restart_with_menu(const std::string& rom_path) {
-    if (platform::kMobile) {  // one app, no second program: the player opens it again (MOBILE_PORT.md, phase 4)
-        std::printf("back to the menu: the app ends\n");
+    if (platform::kMobile) {  // one app, no second program: the app starts itself again
+        if (!platform::restart_app()) std::printf("back to the menu: the app could not start again, it ends\n");
         return;
     }
     const char* base = SDL_GetBasePath();
@@ -392,8 +430,19 @@ void on_network_wait() {
             SDL_Quit();
             std::exit(0);
         }
+        // On phones: the back button asks, a tap says yes.
+        const bool tapped = platform::kMobile && event.type == SDL_EVENT_FINGER_DOWN;
+        if (tapped && g_wait_asks_to_leave) {
+            std::printf("left while waiting for the other players\n");
+            net_leave();
+            restart_with_menu(g_rom_path);
+            dlss_stop();
+            SDL_Quit();
+            std::exit(0);
+        }
         if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
-            if (event.key.scancode == SDL_SCANCODE_ESCAPE) {
+            if (event.key.scancode == SDL_SCANCODE_ESCAPE
+                || (platform::kMobile && event.key.scancode == SDL_SCANCODE_AC_BACK)) {
                 g_wait_asks_to_leave = !g_wait_asks_to_leave;
             } else if (g_wait_asks_to_leave && (event.key.scancode == SDL_SCANCODE_RETURN
                                                 || event.key.scancode == SDL_SCANCODE_KP_ENTER)) {
@@ -411,8 +460,10 @@ void on_network_wait() {
     std::string first, second;
     net_wait_text(first, second);
             draw_screens();
-    if (g_wait_asks_to_leave) draw_question(g_renderer, "Zurück zum Hauptmenü?", "Enter: ja    Esc: nein");
-    else draw_message(g_renderer, first.empty() ? "Warte auf die anderen Spieler ..." : first, second);
+    if (g_wait_asks_to_leave) {
+        draw_question(g_renderer, "Zurück zum Hauptmenü?",
+                      platform::kMobile ? "Tippen: ja    Zurück: nein" : "Enter: ja    Esc: nein");
+    } else draw_message(g_renderer, first.empty() ? "Warte auf die anderen Spieler ..." : first, second);
     SDL_RenderPresent(g_renderer);
 }
 
@@ -451,6 +502,7 @@ int main(int argc, char** argv) {
     std::string rom_path, save_arg, screenshot, settings_arg;
     int scale = -1;
     bool fullscreen = false, smoke_test = false, local = false, force_menu = false;
+    bool touch_controls = platform::kMobile;  // --touch-controls: also on Windows, the mouse as a finger
     bool cpu_compose = false;  // --cpu-compose: the frame put together on the processor, as before
     int compare_every = 0;     // --compare-compose N: every N pictures, graphics card against processor
     long long frame_limit = -1;
@@ -478,11 +530,13 @@ int main(int argc, char** argv) {
         }
         else if (arg == "--settings" && i + 1 < argc) settings_arg = argv[++i];
         else if (arg == "--cpu-compose") cpu_compose = true;
+        else if (arg == "--touch-controls") touch_controls = true;
         else if (arg == "--compare-compose" && i + 1 < argc) compare_every = std::atoi(argv[++i]);
         else if (arg == "--force-mode" && i + 1 < argc) machine_force_mode(int(std::strtol(argv[++i], nullptr, 0)));
         else if (arg.rfind("--", 0) != 0) rom_path = arg;
     }
 
+    if (touch_controls && !platform::kMobile) SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         std::printf("SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -753,6 +807,16 @@ int main(int argc, char** argv) {
     g_texture = texture;
     g_rom_path = rom_path;
     SDL_SetRenderLogicalPresentation(renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    std::unique_ptr<TouchControls> controls;
+    std::unique_ptr<ui::Text> controls_text;
+    if (touch_controls) {
+        controls = std::make_unique<TouchControls>();
+        // Next to a --settings file for tests, so they leave the player's own arrangement alone.
+        controls->load(settings_arg.empty() ? data_folder / "touch_controls.ini"
+                                            : std::filesystem::path(settings_file).replace_extension(".touch.ini"));
+        controls_text = std::make_unique<ui::Text>(renderer);
+        g_controls = controls.get();
+    }
     g_settings_arg = settings_arg;
     const bool online = net.role != NetRole::Off;
     net_set_wait_callback(on_network_wait);
@@ -820,6 +884,36 @@ int main(int argc, char** argv) {
                 && event.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) {
                 g_swapped = !g_swapped;
             }
+            if (controls != nullptr) {
+                if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) controls->set_gamepad_in_use(true);
+                if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.scancode == SDL_SCANCODE_AC_BACK) {
+                    controls->back();  // Android's back button: the game's menu
+                }
+                switch (controls->handle(event)) {
+                    case TouchControls::Action::SwapScreens: g_swapped = !g_swapped; break;
+                    case TouchControls::Action::LeaveGame: back_to_menu = true; running = false; break;
+                    case TouchControls::Action::None: break;
+                }
+            }
+            // Phones: the app goes into the background (home button, a call). The save is written
+            // now, as the app may not come back; the sound stops, and on return the game goes on
+            // from where it was instead of hurrying to catch up.
+            if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND || event.type == SDL_EVENT_TERMINATING) {
+                if (frames_since_change >= 0) {
+                    if (!write_save(save_path, machine_save())) std::printf("the save could not be written\n");
+                    frames_since_change = -1;
+                }
+                if (audio != nullptr) SDL_PauseAudioStreamDevice(audio);
+                std::fflush(stdout);
+                if (event.type == SDL_EVENT_TERMINATING) running = false;
+            }
+            if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+                if (audio != nullptr) {
+                    SDL_ClearAudioStream(audio);
+                    SDL_ResumeAudioStreamDevice(audio);
+                }
+                next_frame = SDL_GetPerformanceCounter();
+            }
             if (event.type == SDL_EVENT_GAMEPAD_ADDED && g_pad.handle == nullptr) {
                 g_pad.handle = SDL_OpenGamepad(event.gdevice.which);
             }
@@ -835,8 +929,12 @@ int main(int argc, char** argv) {
         float mouse_x = 0, mouse_y = 0;
         const SDL_MouseButtonFlags buttons = SDL_GetMouseState(&mouse_x, &mouse_y);
         float touch_x = 0, touch_y = 0;
-        const bool mouse_touch = (buttons & SDL_BUTTON_LMASK) && mouse_on_touch_screen(mouse_x, mouse_y, touch_x, touch_y);
-        hw_set_keys(keyboard_keys() | pad_keys() | scripted_keys(frames));
+        // With the on-screen controls the fingers are the stylus (a finger also moves SDL's mouse).
+        const bool mouse_touch = controls == nullptr && (buttons & SDL_BUTTON_LMASK)
+                                 && mouse_on_touch_screen(mouse_x, mouse_y, touch_x, touch_y);
+        u32 finger_x = 0, finger_y = 0;
+        const bool finger_touch = controls != nullptr && controls->stylus(finger_x, finger_y);
+        hw_set_keys(keyboard_keys() | pad_keys() | scripted_keys(frames) | (controls != nullptr ? controls->keys() : 0u));
         // Blowing into the microphone: the real one, a key, or the left trigger.
         // The keys blow at full strength, the real microphone as loud as it hears.
         microphone.update();
@@ -847,9 +945,11 @@ int main(int argc, char** argv) {
         u32 auto_x = 0, auto_y = 0;
         if (net_auto_touch(auto_x, auto_y)) hw_set_touch(true, auto_x, auto_y);  // the lobby's character
         else if (mouse_touch) hw_set_touch(true, u32(touch_x), u32(touch_y));
+        else if (finger_touch) hw_set_touch(true, finger_x, finger_y);
         else if (g_pad.touching) hw_set_touch(true, u32(g_pad.pointer_x), u32(g_pad.pointer_y));
         else hw_set_touch(false, 0, 0);
-        if (asking_to_leave) {  // the question takes the keys; the game goes on (others may be playing)
+        if (asking_to_leave || (controls != nullptr && controls->busy())) {
+            // The question, the menu or the editor takes the keys; the game goes on (others may be playing).
             hw_set_keys(0);
             hw_set_touch(false, 0, 0);
         }
@@ -972,11 +1072,15 @@ int main(int argc, char** argv) {
                 SDL_UpdateTexture(texture, nullptr, picture.data(), kWidth * 4);
             }
             draw_screens();
+            if (controls_text != nullptr) draw_controls(*controls_text);
             if (!g_grab.empty() && frames == frame_limit) {  // --grab: the window's last picture, for checking
+                // With the on-screen controls the whole output, not only the DS's 256 x 384 part.
+                if (controls != nullptr) SDL_SetRenderLogicalPresentation(renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
                 if (SDL_Surface* read = SDL_RenderReadPixels(renderer, nullptr)) {
                     SDL_SaveBMP(read, g_grab.c_str());
                     SDL_DestroySurface(read);
                 }
+                SDL_SetRenderLogicalPresentation(renderer, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
             }
             if (asking_to_leave) draw_question(renderer, "Zurück zum Hauptmenü?", "Enter: ja    Esc: nein");
             SDL_RenderPresent(renderer);
@@ -1004,6 +1108,9 @@ int main(int argc, char** argv) {
     if (online) net_leave();
     if (back_to_menu) restart_with_menu(rom_path);
     microphone.close();  // before SDL ends, or closing it later reaches into nothing
+    g_controls = nullptr;
+    controls_text.reset();  // its textures belong to the renderer
+    controls.reset();
     dlss_stop();  // before SDL takes the Direct3D device away
     SDL_Quit();
     return 0;

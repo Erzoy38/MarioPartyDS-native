@@ -29,6 +29,11 @@ std::string keep_rom(const std::string& chosen, std::string& error);
 // Android: Vulkan, iOS: Metal.
 const char* preferred_render_driver();
 
+// Phones and tablets: the game cannot be started twice in one process, so "back to the menu" starts
+// the app again. Android: MainActivity.restartApp (a fresh process). False where that is not possible
+// (iOS for now; Windows starts the program itself, see main.cpp).
+bool restart_app();
+
 // Phones and tablets: a touch screen is the main input, there is one window, no own server.
 constexpr bool kMobile =
 #if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)

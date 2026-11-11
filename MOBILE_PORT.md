@@ -156,7 +156,34 @@ Der Port ist schon weitgehend plattformneutral:
 - Prüfung: Start, Startbildschirm, ROM wählen, Titelbild und ein Minispiel im Emulator, wenn möglich auf
   einem echten Gerät.
 
-### Phase 4: Steuerung und Bildschirm
+### Phase 4: Steuerung und Bildschirm, umgesetzt (unter Windows geprüft, auf Android nur gebaut)
+- **Touch-Steuerung:** `src/touch_controls.h/.cpp` mit Steuerkreuz (8 Richtungen), A B X Y (zwischen
+  zwei Tasten beide), L, R, Start, Select und einer Menütaste. Mehrere Finger gleichzeitig; ein Finger
+  darf von Taste zu Taste gleiten. Ein Finger auf dem unteren DS-Bildschirm ist der Stift.
+- **Spielmenü** (Menütaste oder Android-Zurück): Weiter, Bildschirme tauschen, Tasten anpassen,
+  Tasten aus- und einblenden, Zurück zum Hauptmenü (zweimal tippen). Solange es offen ist, bekommt das
+  Spiel keine Eingaben; es läuft weiter wie bei der Esc-Frage, weil online andere mitspielen.
+- **Editor:** Tasten ziehen, antippen wählt; Kleiner/Größer (0,5–2), Blasser/Kräftiger (0,15–1),
+  Standard, Fertig. Gespeichert je Ausrichtung in `touch_controls.ini` im App-Ordner.
+- **Hoch- und Querformat:** Hochformat: Bildschirme übereinander oben (höchstens 62 % der Höhe), Tasten
+  darunter. Querformat: Anordnung aus den Einstellungen, Tasten an den Seiten, bei „nebeneinander“
+  halbdurchsichtig darüber. Alles innerhalb von `SDL_GetWindowSafeArea`, mit Rand statt Abschneiden.
+- **Controller:** Ein Tastendruck am Gamepad blendet die Touch-Tasten aus, eine Berührung wieder ein.
+- **Hintergrund:** Beim Wechsel in den Hintergrund wird ein offener Spielstand sofort geschrieben, der Ton
+  pausiert. Zurück im Vordergrund wird der Tonpuffer geleert, und das Spiel holt keine Zeit nach.
+- **Zurück zum Hauptmenü:** Das Spiel startet nur einmal je Prozess. Auf Android ruft
+  `platform::restart_app` per JNI `MainActivity.restartApp`; `RestartActivity` (eigener Prozess
+  `:restart`) beendet den Spielprozess und öffnet die App neu. Eine fertige Activity beendet ihren
+  Prozess, damit jeder Start frisch beginnt. iOS kann das nicht (Phase 6).
+- **Zurück-Taste** in Startbildschirm und Online-Menü wie Esc, nur auf Handys.
+- **Windows:** Ohne `--touch-controls` unverändert: Spielbild (`ADF748D445B5A938`) und Fensterbild nach
+  2400 Bildern gleich wie v0.3.6, Boot-Prüfung gleich. Mit `--touch-controls` wird die Maus zum Finger
+  (`SDL_HINT_MOUSE_TOUCH_EVENTS`); so wurden Menü, Editor, Speichern, Stift und A-Taste mit echten
+  Klicks geprüft (`tools/test_window_input.ps1`, neuer Schritt `pixel=X;Y`).
+- **Offen:** Startbildschirm und Online-Menü beachten den sicheren Bereich noch nicht (sie sind mit
+  Rand eingepasst). Test auf einem Gerät steht aus.
+
+Ursprünglicher Plan:
 - **Touch-Steuerung:**
   - Virtuelles Steuerkreuz und die Tasten A, B, X, Y, L, R, Start und Select.
   - Tippen auf den unteren DS-Bildschirm wirkt als Stift.
