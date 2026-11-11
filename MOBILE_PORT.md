@@ -221,12 +221,49 @@ Stand: umgesetzt (unter Windows geprüft, auf Android nur gebaut).
   Gerät knacken, ist der nächste Schritt 512.
 
 ### Phase 6: iOS
-- **CMake:** mit `CMAKE_SYSTEM_NAME=iOS`. `cmake -G Xcode` erzeugt daraus auf dem Mac das Xcode-Projekt.
-  Das ist verlässlicher als eine von Hand geschriebene `.pbxproj`.
-- **App-Dateien:** `Info.plist`, App-Symbol, Startbildschirm und Metal-Renderer.
-- **IPA:** Die Export-Einstellungen (`ExportOptions.plist`) gehören dazu. Das Signieren braucht ein
-  eigenes Apple-Entwicklerkonto.
-- **Prüfung:** nur auf dem Mac (Simulator oder iPhone/iPad), durch dich oder einen Mac, auf den ich zugreifen kann.
+Stand: vorbereitet. Gebaut und getestet wird auf einem Mac; hier ist nur geprüft, was ohne Mac geht.
+- **Bauen auf dem Mac:** `ios/build.sh` (Xcode, CMake ab 3.25).
+  - `MPDS_IOS_TEAM=<Team-ID> ios/build.sh` erzeugt `native/build-ios/ipa/MarioPartyDS.ipa` für eigene,
+    registrierte Geräte (Export `development`, automatische Signatur, `ios/ExportOptions.plist`).
+  - `ios/build.sh --simulator` baut ohne Apple-Konto für den Simulator (Apple-Silicon-Mac) und nennt die
+    `xcrun simctl`-Befehle zum Installieren und Starten.
+  - Vorher nötig: `native/generated/` (von Windows kopieren oder `python3 tools/recomp.py`) und
+    `native/third_party/` wie für Android.
+- **CMake:** Zweig `CMAKE_SYSTEM_NAME STREQUAL "iOS"` in `native/CMakeLists.txt`, für `cmake -G Xcode`.
+  SDL3 aus `third_party/SDL3-src` als statische Bibliothek in der App, Zeichnen über Metal
+  (`preferred_render_driver`). Bundle-ID `io.github.erzoy38.mariopartyds`, iPhone und iPad, ab iOS 15, arm64.
+  In die App kommen das Symbol (`ios/Assets.xcassets`), die Schriften unter `fonts/` und, falls lokal
+  vorhanden, `menu_background.png`.
+- **`ios/Info.plist.in`:** Version und Bundle-ID setzt CMake ein. Startbildschirm über `UILaunchScreen`
+  (ohne Storyboard), Hoch- und Querformat, Vollbild ohne Split View, `NSMicrophoneUsageDescription`,
+  `NSLocalNetworkUsageDescription` (Server im eigenen Netz), Copyright „Erzoy38“.
+- **App-Symbol:** `tools/ios_icon.py` zeichnet dasselbe Bild wie das Android-Symbol als 1024×1024-PNG
+  ohne Alphakanal; iOS rundet die Ecken selbst.
+- **Ordner:** `user_folder()` ist auf iOS der Documents-Ordner der App. Er erscheint in der Dateien-App
+  unter „Auf meinem iPhone > Mario Party DS“ (`UIFileSharingEnabled`, `LSSupportsOpeningDocumentsInPlace`).
+  Dort liegen auch Spielstand, Einstellungen und Log (`log_path`).
+- **ROM:** SDL 3.4 hat auf iOS keine Dateiauswahl (`SDL_ShowOpenFileDialog` ist dort nur ein Platzhalter).
+  Die `.nds`-Datei wird deshalb mit der Dateien-App in den App-Ordner kopiert; „ROM IMAGE“ oder „Spielen“
+  nimmt die erste `.nds` dort (`rom_in_user_folder`), sonst steht ein Hinweis da. Sie wird nicht noch
+  einmal kopiert (`keep_rom`).
+- **Zurück zum Hauptmenü:** Eine iOS-App kann sich nicht selbst neu starten. Das Spiel sagt
+  „The app closes now. Open it again to get to the main menu.“ und beendet sich.
+- **Ende:** Auf iOS läuft eine App nach dem Ende von `main` ohne Bild weiter. `main` ruft deshalb
+  `platform::app_ended`, das dort den Prozess beendet. Unter Windows und Android ändert sich nichts.
+- **Hintergrund:** Auf Handys wartet die Spielschleife zwischen `WILL_ENTER_BACKGROUND` und
+  `DID_ENTER_FOREGROUND` (`SDL_WaitEventTimeout`). Android hält SDLs Schleife ohnehin an, iOS nicht, und
+  dort darf eine App im Hintergrund nicht zeichnen.
+- **Netz:** Die Sockets setzen schon `SO_NOSIGPIPE`, ein abgebrochenes Spiel beendet die App also nicht.
+- **Unter Windows geprüft:**
+  - Alle App-Quellen übersetzen mit Clang auf dem iOS-Pfad (`__APPLE__`, `TARGET_OS_IPHONE`, SDL meldet
+    `SDL_PLATFORM_IOS`) ohne Fehler und Warnungen, gegen die Header aus dem NDK.
+  - `Info.plist` (mit eingesetzten Werten) und `ExportOptions.plist` lassen sich mit `plistlib` lesen,
+    die `Contents.json` sind gültiges JSON, und `bash -n ios/build.sh` meldet nichts.
+  - Windows unverändert: Spielbild nach 2400 Bildern `ADF748D445B5A938`, `--smoke-test` läuft.
+- **Offen (braucht einen Mac):** CMake-Konfiguration mit Xcode, Übersetzen mit dem iOS-SDK, Start im
+  Simulator, auf einem iPhone oder iPad: Metal, Touch, Ton, Mikrofonabfrage, Dateien-App und Hintergrund.
+  Eine `.ipa` braucht ein Apple-Entwicklerkonto; mit einer kostenlosen Apple-ID geht nur „Run“ aus Xcode
+  auf ein angeschlossenes Gerät (7 Tage gültig).
 
 ### Phase 7: QA je Plattform
 - **Gleichheit:**

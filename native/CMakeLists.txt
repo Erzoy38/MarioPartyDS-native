@@ -138,6 +138,50 @@ elseif(ANDROID)
     add_library(main SHARED ${MPDS_APP_SOURCES})
     target_link_libraries(main PRIVATE runtime game_code runtime SDL3::SDL3)
     target_compile_options(main PRIVATE ${MPDS_WARNINGS})
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # iPhone and iPad, built on a Mac by ios/build.sh (cmake -G Xcode, then xcodebuild). SDL3 from the
+    # same source as on Android, as a static library inside the app; drawing through Metal.
+    enable_language(C OBJC)
+    set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+    set(SDL_STATIC ON CACHE BOOL "" FORCE)
+    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL3-src" SDL3 EXCLUDE_FROM_ALL)
+
+    set(MPDS_IOS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ios")
+    set(MPDS_IOS_BUNDLE_ID "io.github.erzoy38.mariopartyds" CACHE STRING "The app's bundle identifier")
+    set(MPDS_IOS_TEAM "" CACHE STRING "Apple developer team ID (10 characters) for signing")
+    set(MPDS_IOS_VERSION "0.4.0" CACHE STRING "Version shown to the player (CFBundleShortVersionString)")
+    set(MPDS_IOS_BUILD "1" CACHE STRING "Build number (CFBundleVersion)")
+    configure_file("${MPDS_IOS_DIR}/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" @ONLY)
+
+    # Into the app: the icon (asset catalog), the fonts under fonts/, the start screen's picture if it
+    # is here (it stays local, see the Windows part). platform::bundled_file looks in the bundle.
+    set(MPDS_IOS_ASSETS "${MPDS_IOS_DIR}/Assets.xcassets")
+    file(GLOB MPDS_IOS_FONTS "${MPDS_FONTS_DIR}/*.ttf" "${MPDS_FONTS_DIR}/OFL.txt")
+    set_source_files_properties(${MPDS_IOS_FONTS} PROPERTIES MACOSX_PACKAGE_LOCATION "fonts")
+    set(MPDS_IOS_RESOURCES "${MPDS_IOS_ASSETS}")
+    set(MENU_BACKGROUND "${CMAKE_CURRENT_SOURCE_DIR}/assets/menu_background.png")
+    if(EXISTS "${MENU_BACKGROUND}")
+        list(APPEND MPDS_IOS_RESOURCES "${MENU_BACKGROUND}")
+    endif()
+
+    add_executable(MarioPartyDS MACOSX_BUNDLE ${MPDS_APP_SOURCES} ${MPDS_IOS_RESOURCES} ${MPDS_IOS_FONTS})
+    target_link_libraries(MarioPartyDS PRIVATE runtime game_code runtime SDL3::SDL3-static)
+    target_compile_options(MarioPartyDS PRIVATE ${MPDS_WARNINGS})
+    set_target_properties(MarioPartyDS PROPERTIES
+        OUTPUT_NAME "MarioPartyDS"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
+        RESOURCE "${MPDS_IOS_RESOURCES}"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${MPDS_IOS_BUNDLE_ID}"
+        XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+        XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
+        XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development"
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${MPDS_IOS_TEAM}"
+        XCODE_ATTRIBUTE_MARKETING_VERSION "${MPDS_IOS_VERSION}"
+        XCODE_ATTRIBUTE_CURRENT_PROJECT_VERSION "${MPDS_IOS_BUILD}"
+        XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT "dwarf-with-dsym"
+        XCODE_ATTRIBUTE_ENABLE_BITCODE "NO")
 else()
-    message(STATUS "The app for iOS comes in phase 6 (MOBILE_PORT.md); building the runtime only")
+    message(STATUS "No app for this system (Windows, Android and iOS have one); building the runtime only")
 endif()

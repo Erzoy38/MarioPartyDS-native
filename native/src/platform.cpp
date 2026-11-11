@@ -2,6 +2,11 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <vector>
+
 #ifdef __ANDROID__
 #include <jni.h>
 #endif
@@ -18,7 +23,10 @@ namespace {
 }  // namespace
 
 std::filesystem::path user_folder() {
-    if constexpr (kMobile) {
+    if constexpr (kIOS) {
+        const char* documents = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);  // SDL's own string, not freed
+        return documents ? std::filesystem::u8path(std::string(documents)) : std::filesystem::path(".");
+    } else if constexpr (kMobile) {
         char* pref = SDL_GetPrefPath("MarioPartyDS", "MarioPartyDS");
         std::filesystem::path path = pref ? std::filesystem::u8path(std::string(pref)) : std::filesystem::path(".");
         SDL_free(pref);
@@ -36,6 +44,18 @@ std::string bundled_file(const std::string& name) {
 #endif
 }
 
+std::string rom_in_user_folder() {
+    std::vector<std::string> found;
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(user_folder(), error), end; !error && it != end; it.increment(error)) {
+        std::string extension = it->path().extension().string();
+        for (char& c : extension) c = char(std::tolower(static_cast<unsigned char>(c)));
+        if (extension == ".nds" && it->is_regular_file(error)) found.push_back(it->path().string());
+    }
+    std::sort(found.begin(), found.end());
+    return found.empty() ? std::string() : found.front();
+}
+
 std::string keep_rom(const std::string& chosen, std::string& error) {
     if constexpr (!kMobile) {
         return chosen;
@@ -43,6 +63,9 @@ std::string keep_rom(const std::string& chosen, std::string& error) {
         const std::filesystem::path kept = user_folder() / "rom.nds";
         const std::string kept_text = kept.string();  // UTF-8 on Android and iOS
         if (chosen == kept_text) return chosen;
+        // Already in the app's own folder (iOS, put there with the Files app): it stays there.
+        const std::string own = user_folder().string();
+        if (!own.empty() && chosen.size() > own.size() && chosen.compare(0, own.size(), own) == 0) return chosen;
         std::size_t size = 0;
         void* data = SDL_LoadFile(chosen.c_str(), &size);
         if (data == nullptr) {
@@ -78,6 +101,10 @@ bool restart_app() {
 #else
     return false;
 #endif
+}
+
+void app_ended([[maybe_unused]] int code) {
+    if constexpr (kIOS) std::exit(code);
 }
 
 const char* preferred_render_driver() {

@@ -253,6 +253,7 @@ std::string ask_for_rom(SDL_Window* window) {
 }
 
 std::filesystem::path log_path() {
+    if constexpr (platform::kIOS) return platform::user_folder();  // Documents: seen in the Files app
     char* base = SDL_GetPrefPath("MarioPartyDS", "MarioPartyDS");
     std::filesystem::path path = base ? std::filesystem::path(base) : std::filesystem::path(".");
     SDL_free(base);
@@ -462,7 +463,14 @@ bool mouse_on_touch_screen(float window_x, float window_y, float& x, float& y) {
 // Starts this program again with the menu, after the game has ended.
 void restart_with_menu(const std::string& rom_path) {
     if (platform::kMobile) {  // one app, no second program: the app starts itself again
-        if (!platform::restart_app()) std::printf("back to the menu: the app could not start again, it ends\n");
+        if (!platform::restart_app()) {
+            std::printf("back to the menu: the app could not start again, it ends\n");
+            // iOS: an app cannot open itself again, so the player is told before it closes.
+            if (platform::kIOS) {
+                SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Mario Party DS",
+                                         "The app closes now. Open it again to get to the main menu.", g_window);
+            }
+        }
         return;
     }
     const char* base = SDL_GetBasePath();
@@ -565,7 +573,15 @@ void on_network_end(const std::string& text) {
 
 }  // namespace
 
+int run_game(int argc, char** argv);
+
 int main(int argc, char** argv) {
+    const int code = run_game(argc, argv);
+    platform::app_ended(code);  // iOS: the process ends here; elsewhere nothing changes
+    return code;
+}
+
+int run_game(int argc, char** argv) {
     std::string rom_path, save_arg, screenshot, settings_arg;
     int scale = -1;
     bool fullscreen = false, smoke_test = false, local = false, force_menu = false;
@@ -700,7 +716,7 @@ int main(int argc, char** argv) {
     if (net_load_rejoin(rejoin_file.string(), rejoin)) rejoin_room = rejoin.code.empty() ? "direkt" : rejoin.code;
     if (!use_menu) {
         // Straight into the game (tests, --local): the ROM from the command line, the settings or a dialog.
-        if (rom_path.empty()) rom_path = ask_for_rom(window);
+        if (rom_path.empty()) rom_path = platform::kFileDialog ? ask_for_rom(window) : platform::rom_in_user_folder();
         if (rom_path.empty()) {
             dlss_stop();  // before SDL takes the Direct3D device away
             SDL_Quit();
@@ -930,6 +946,7 @@ int main(int argc, char** argv) {
     std::future<void> upscale_job;
     std::vector<u8> layer_3d;  // the 3D picture for the graphics card
     u64 dlss_serial = ~0ull;   // the list DLSS was last given
+    bool in_background = false;  // phones: between WILL_ENTER_BACKGROUND and DID_ENTER_FOREGROUND
 
     while (running && frame_limit != frames) {
         SDL_Event event;
@@ -979,8 +996,10 @@ int main(int argc, char** argv) {
                 if (audio != nullptr) SDL_PauseAudioStreamDevice(audio);
                 std::fflush(stdout);
                 if (event.type == SDL_EVENT_TERMINATING) running = false;
+                in_background = platform::kMobile;
             }
             if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+                in_background = false;
                 if (audio != nullptr) {
                     SDL_ClearAudioStream(audio);
                     sound_out.started = false;  // the empty stream after the pause is no gap
@@ -997,6 +1016,12 @@ int main(int argc, char** argv) {
                 g_pad.handle = nullptr;
                 g_pad.pointer_shown = false;
             }
+        }
+        // In the background the game waits: Android holds SDL's loop itself, iOS does not, and an
+        // app there must not draw while it is not seen.
+        if (in_background && running) {
+            SDL_WaitEventTimeout(nullptr, 100);
+            continue;
         }
         update_pad_pointer();
 

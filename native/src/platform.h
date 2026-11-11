@@ -12,8 +12,13 @@
 namespace platform {
 
 // Where the player's own folders are (textures, mods). Windows: next to the program.
-// Android/iOS: the app's own storage (SDL_GetPrefPath), since the program's folder cannot be written.
+// Android: the app's own storage (SDL_GetPrefPath), since the program's folder cannot be written.
+// iOS: the app's Documents folder, which the Files app shows ("On My iPhone > Mario Party DS"); the
+// ROM, textures and mods are put there, and save, settings and log are kept there too.
 std::filesystem::path user_folder();
+
+// iOS has no file picker in SDL: the first .nds file in user_folder(), or "" if there is none.
+std::string rom_in_user_folder();
 
 // A file that comes with the program (menu_background.png, fonts), for SDL_IOFromFile/SDL_LoadPNG.
 // Windows and iOS: in the program's folder or bundle. Android: inside the APK, by relative name.
@@ -31,15 +36,30 @@ const char* preferred_render_driver();
 
 // Phones and tablets: the game cannot be started twice in one process, so "back to the menu" starts
 // the app again. Android: MainActivity.restartApp (a fresh process). False where that is not possible
-// (iOS for now; Windows starts the program itself, see main.cpp).
+// (iOS cannot start itself; Windows starts the program itself, see main.cpp).
 bool restart_app();
 
-// Phones and tablets: a touch screen is the main input, there is one window, no own server.
-constexpr bool kMobile =
-#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+// The game's main() has returned. iOS keeps an app running after that with nothing on screen, so
+// there it ends the process; elsewhere nothing happens (the program ends as before).
+void app_ended(int code);
+
+// iPhone and iPad.
+constexpr bool kIOS =
+#if defined(__APPLE__) && TARGET_OS_IPHONE
     true;
 #else
     false;
 #endif
+
+// Phones and tablets: a touch screen is the main input, there is one window, no own server.
+constexpr bool kMobile =
+#if defined(__ANDROID__)
+    true;
+#else
+    kIOS;
+#endif
+
+// SDL_ShowOpenFileDialog works (Windows, Android). Not on iOS (SDL 3.4 has none there).
+constexpr bool kFileDialog = !kIOS;
 
 }  // namespace platform
