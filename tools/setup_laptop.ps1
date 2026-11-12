@@ -1,17 +1,20 @@
 # Sets up a second Windows PC (e.g. a laptop) to build the Android app from this repository.
 #
-# Before: install Git for Windows, then clone the private repository and run this from its folder:
+# Before: install Git for Windows, then clone the repository and run this from its folder:
 #   git clone https://github.com/Erzoy38/MarioPartyDS-native.git
 #   cd MarioPartyDS-native
 #   powershell -ExecutionPolicy Bypass -File tools\setup_laptop.ps1
 #
+# The repository is public; what must stay private (translated game code, the release key) lies in
+# the releases of the private repository Erzoy38/MarioPartyDS-private, which needs the owner's login.
+#
 # What it does (each step is skipped when already done, so it can simply be run again):
 #   1. GitHub CLI into $Tools\gh; you log in once in the browser (gh auth login --web).
-#   2. The project data that is not in Git (release "laptop-data": native/third_party, native/assets,
+#   2. The project data that is not in Git (private release "data": native/third_party, native/assets,
 #      native/generated, analysis tables) into this folder.
 #   3. JDK 17, Android command-line tools, SDK packages (sdkmanager asks you to accept the licences),
 #      NDK r29, all into $Tools. Downloads are checked against the SHA-256 of the files used on the PC.
-#   4. The release key from the branch "release-key"; android/keystore.properties asks for its two
+#   4. The release key from the same private release; android/keystore.properties asks for its two
 #      passwords (they are not on GitHub) and stays on this PC only.
 #   5. Builds APK and AAB with android\build.ps1 (skip with -NoBuild).
 # Not included on purpose: the ROM, savegames, game graphics (gfx/, web/), unpacked/.
@@ -23,7 +26,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"  # Invoke-WebRequest is many times faster without the bar
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$repo = "Erzoy38/MarioPartyDS-native"
+$vault = "Erzoy38/MarioPartyDS-private"  # release "data": mpds-laptop-data.zip and mpds-release.jks
 New-Item -ItemType Directory -Force $Tools, "$Tools\dl", "$Tools\keys" | Out-Null
 
 function Step($text) { Write-Host "`n== $text" -ForegroundColor Cyan }
@@ -58,11 +61,11 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -ne 0) { throw "GitHub login failed" }
 }
 
-Step "2. Project data (release laptop-data)"
+Step "2. Project data (private release data)"
 if (-not (Test-Path "$root\native\generated") -or -not (Test-Path "$root\native\third_party\SDL3-src")) {
     $data = "$Tools\dl\mpds-laptop-data.zip"
     if (-not (Test-Path $data)) {
-        & $gh release download laptop-data --repo $repo --pattern mpds-laptop-data.zip --dir "$Tools\dl"
+        & $gh release download data --repo $vault --pattern mpds-laptop-data.zip --dir "$Tools\dl"
         if ($LASTEXITCODE -ne 0) { throw "download of the project data failed" }
     }
     Expand-Into $data $root
@@ -111,16 +114,9 @@ Step "4. Release key"
 $key = "$Tools\keys\mpds-release.jks"
 $keyHash = "EA135FB5DADC21BF5F61BA826C8AF5EBB59C0AF5D7CC03C15C74DA8466B611F2"
 if (-not (Test-Path $key) -or (Get-FileHash $key).Hash -ne $keyHash) {
-    Push-Location $root
-    try {
-        cmd /c "git fetch -q origin release-key 2>&1"  # git reports on stderr, which PowerShell 5.1 shows as errors
-        if ($LASTEXITCODE -ne 0) { throw "git fetch of release-key failed" }
-        # cmd's redirection keeps the bytes as they are (PowerShell's would re-encode them)
-        cmd /c "git cat-file blob FETCH_HEAD:mpds-release.jks > `"$key`""
-    } finally {
-        Pop-Location
-    }
-    if ((Get-FileHash $key).Hash -ne $keyHash) { throw "the key from release-key does not match" }
+    & $gh release download data --repo $vault --pattern mpds-release.jks --dir "$Tools\keys" --clobber
+    if ($LASTEXITCODE -ne 0) { throw "download of the release key failed" }
+    if ((Get-FileHash $key).Hash -ne $keyHash) { throw "the downloaded key does not match" }
 }
 $props = "$root\android\keystore.properties"
 if (-not (Test-Path $props)) {

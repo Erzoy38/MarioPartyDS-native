@@ -319,19 +319,25 @@ Android-App auf einem weiteren Windows-PC bauen und ein Handy per USB prüfen:
 2. `powershell -ExecutionPolicy Bypass -File tools\setup_laptop.ps1` (Werkzeuge nach
    `%USERPROFILE%\MPDS-Tools`, anderer Ort mit `-Tools`). Das Skript:
    - holt die GitHub CLI und lässt einmal im Browser anmelden,
-   - lädt das private Release `laptop-data` (119 MB: `native/third_party`, `native/assets`,
-     `native/generated`, Analyse-Tabellen) und entpackt es,
+   - lädt aus dem privaten Repository `Erzoy38/MarioPartyDS-private`, Release `data`, das Paket
+     `mpds-laptop-data.zip` (119 MB: `native/third_party`, `native/assets`, `native/generated`,
+     Analyse-Tabellen) und entpackt es,
    - lädt JDK 17, Android-Kommandozeilenwerkzeuge, SDK-Pakete und NDK r29 (Prüfsummen wie auf dem PC;
      die SDK-Lizenzen bestätigt man selbst),
-   - holt den Release-Schlüssel aus dem Zweig `release-key` und fragt einmal nach den beiden Passwörtern
-     für `android/keystore.properties`,
+   - holt den Release-Schlüssel `mpds-release.jks` aus demselben Release und fragt einmal nach den
+     beiden Passwörtern für `android/keystore.properties`,
    - baut APK und AAB (`-NoBuild` lässt das weg).
 3. `adb` liegt danach unter `MPDS-Tools\sdk\platform-tools\adb.exe`.
 
+**Öffentlich und privat getrennt (seit 2026-11-12):** `MarioPartyDS-native` ist öffentlich und enthält
+nur Quellcode. Alles mit übersetztem Spielcode oder Schlüssel liegt im privaten `MarioPartyDS-private`:
+Release `data` (Laptop-Paket und Schlüssel) und die App-Builds (`v0.4.0`, `v0.4.1` mit APK und AAB).
+Neue APKs dorthin hochladen, nie als Release des öffentlichen Repositorys.
+
 Nicht im Paket: ROM, Spielstände, Spielgrafiken (`gfx/`, `web/`), `unpacked/`. Die Windows-Exe braucht
-zusätzlich die Visual Studio Build Tools. `laptop-data` neu erzeugen, wenn sich `native/generated` oder
-`third_party` ändern: Paket mit `tar -a -c -f` aus diesen Ordnern, dann `gh release upload laptop-data
-<zip> --clobber`.
+zusätzlich die Visual Studio Build Tools. Das Paket neu erzeugen, wenn sich `native/generated` oder
+`third_party` ändern: mit `tar -a -c -f` aus diesen Ordnern, dann
+`gh release upload data <zip> --repo Erzoy38/MarioPartyDS-private --clobber`.
 
 ## Risiken
 
