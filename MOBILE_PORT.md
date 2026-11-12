@@ -310,6 +310,29 @@ und keinen Mac. Geprüft wurde deshalb, was unter Windows geht; alles Weitere br
   Online Handy gegen PC über das Netz, Vulkan/GLES/Metal, Touch, Ton, Mikrofon, Controller, alle
   Bildschirmgrößen, iOS insgesamt.
 
+## Zweiter Rechner (Laptop)
+
+Android-App auf einem weiteren Windows-PC bauen und ein Handy per USB prüfen:
+
+1. Git für Windows installieren, dann
+   `git clone https://github.com/Erzoy38/MarioPartyDS-native.git` und in den Ordner wechseln.
+2. `powershell -ExecutionPolicy Bypass -File tools\setup_laptop.ps1` (Werkzeuge nach
+   `%USERPROFILE%\MPDS-Tools`, anderer Ort mit `-Tools`). Das Skript:
+   - holt die GitHub CLI und lässt einmal im Browser anmelden,
+   - lädt das private Release `laptop-data` (119 MB: `native/third_party`, `native/assets`,
+     `native/generated`, Analyse-Tabellen) und entpackt es,
+   - lädt JDK 17, Android-Kommandozeilenwerkzeuge, SDK-Pakete und NDK r29 (Prüfsummen wie auf dem PC;
+     die SDK-Lizenzen bestätigt man selbst),
+   - holt den Release-Schlüssel aus dem Zweig `release-key` und fragt einmal nach den beiden Passwörtern
+     für `android/keystore.properties`,
+   - baut APK und AAB (`-NoBuild` lässt das weg).
+3. `adb` liegt danach unter `MPDS-Tools\sdk\platform-tools\adb.exe`.
+
+Nicht im Paket: ROM, Spielstände, Spielgrafiken (`gfx/`, `web/`), `unpacked/`. Die Windows-Exe braucht
+zusätzlich die Visual Studio Build Tools. `laptop-data` neu erzeugen, wenn sich `native/generated` oder
+`third_party` ändern: Paket mit `tar -a -c -f` aus diesen Ordnern, dann `gh release upload laptop-data
+<zip> --clobber`.
+
 ## Risiken
 
 - **Geschwindigkeit:** Spielcode und 3D-Rasterer laufen auf dem Prozessor. Auf einem Handy sind 1x und 2x
