@@ -54,6 +54,11 @@ add_library(runtime STATIC runtime/cpu.cpp runtime/memory.cpp runtime/hw.cpp run
             ${MPDS_SECURE} runtime/machine.cpp)
 target_include_directories(runtime PUBLIC runtime)
 target_compile_options(runtime PRIVATE ${MPDS_WARNINGS})
+if(NOT MSVC)
+    # Clang fuses multiply and add on arm64; the 3D rasterizer then rounds differently from the
+    # Windows build and phones show slightly different pixels in 3D scenes. Kept apart, as on Windows.
+    set_source_files_properties(runtime/gpu3d.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+endif()
 target_link_libraries(runtime PUBLIC ${MPDS_CRYPTO_LIBS})
 if(WIN32)
     target_link_libraries(runtime PUBLIC ws2_32)

@@ -274,6 +274,42 @@ Stand: vorbereitet. Gebaut und getestet wird auf einem Mac; hier ist nur geprüf
   - Es enthält weder ROM noch Spielstand noch Schlüssel.
   - APK, AAB und IPA enthalten den übersetzten Spielcode. Sie bleiben deshalb wie die Exe privat.
 
+**Stand: ohne Gerät geprüft (2026-11-11).** Es gibt kein Android-Gerät, keinen Emulator (kein Hypervisor)
+und keinen Mac. Geprüft wurde deshalb, was unter Windows geht; alles Weitere braucht ein Gerät.
+
+- **ARM-Ersatz unter Windows:** Zweiter Headless-Build mit Clang 21 aus dem NDK (`clang-cl`) mit den
+  Eigenheiten von Android arm64: `char` ohne Vorzeichen (`/J`), `-O1` wie der Spielcode auf Android und
+  zusammengefasstes Multiplizieren und Addieren (`-mfma -ffp-contract=on`, wie Clang auf arm64).
+  Bauordner `native/build-armlike/` (nicht im Repository); `native/CMakeLists.txt` bleibt dafür unverändert,
+  die Schalter kommen über einen Compiler-Launcher.
+- **Allein gespielt:** Gleiche Eingaben bis ins Menü, Speicherabzug bei Tick 600, 1200, 1800 und 2400:
+  Hauptspeicher, ITCM, DTCM, Palette, OAM und Bild sind zwischen MSVC- und ARM-Ersatz-Build byte-gleich.
+- **Online gemischt:** Minispiel 101 (Szene 1) mit vier Spielern über `tools/net_minigame_matrix.py`,
+  Host MSVC, drei Gäste ARM-Ersatz, verglichen mit zwei Läufen nur mit MSVC:
+  - Alle betreten das Minispiel bei Schritt 3753 und verlassen es bei 5779, wie in den MSVC-Läufen.
+  - Bild des Hosts gleich wie im reinen MSVC-Lauf.
+  - Die Gäste zeigen auf dem unteren Bildschirm (3D-Boden) etwa 10.000 Pixel anders, verstreut über
+    die Textur und entlang einer Dreieckskante. Ursache ist FMA im 3D-Rasterer (`gpu3d.cpp` rechnet mit
+    `float`): ohne `-mfma` neu gebaut sind die Bilder aller vier Spieler gleich. Nur das Bild ist
+    betroffen, der Spielzustand nicht; Gleitkomma kommt nur im Rasterer vor.
+  - Behoben: `native/CMakeLists.txt` übersetzt `runtime/gpu3d.cpp` mit Clang (Android, iOS) mit
+    `-ffp-contract=off`. ARM-Ersatz mit FMA an und diesem Schalter: Bilder aller vier Spieler gleich
+    (0 Pixel). MSVC betrifft das nicht, Windows-Bild weiter `ADF748D445B5A938`.
+  - Zwischen zwei Läufen können die Figuren-Symbole der Gäste anders verteilt sein: die Spielernummer
+    entsteht aus der Reihenfolge des Verbindens (siehe `MULTIPLAYER_ROADMAP.md`), unabhängig vom Build.
+- **Code-Durchsicht auf ARM-Fallen:** Kein `long` in `runtime/`, `src/` und `generated/` (unter Windows
+  32 Bit, auf Android und iOS 64 Bit). Schiebebefehle der ARM-CPU sind für jede Weite ausdrücklich
+  behandelt (`cpu.h`), hängen also nicht vom Verhalten von x86 oder ARM ab. `unordered_map` nur für
+  Texturersatz und Bewegungsdaten im Rasterer, nicht im Spielzustand.
+- **Pakete:** APK (15 Einträge) und AAB (27) enthalten keine `.nds`, `.sav`, Schlüssel, `keystore.properties`
+  oder `local.properties` und keine Datei mit DS-ROM-Kopf. Inhalt: `libmain.so` (arm64 62,8 MB, x86_64
+  59,5 MB), `libSDL3.so`, Schriften, `menu_background.png`; im AAB zusätzlich Debug-Symbole.
+- **Dauerlauf Windows:** 12.000 Bilder in 206 s (Echtzeit, 58 Bilder/s), Arbeitsspeicher gleichbleibend
+  188 bis 191 MB. Headless rechnen beide Builds 2400 Ticks in etwa 21 s, rund doppelte Echtzeit ohne Anzeige.
+- **Offen (braucht Geräte):** Bildrate 1x/2x und Speicher auf Handys, echtes ARM (nicht nur Ersatz),
+  Online Handy gegen PC über das Netz, Vulkan/GLES/Metal, Touch, Ton, Mikrofon, Controller, alle
+  Bildschirmgrößen, iOS insgesamt.
+
 ## Risiken
 
 - **Geschwindigkeit:** Spielcode und 3D-Rasterer laufen auf dem Prozessor. Auf einem Handy sind 1x und 2x
