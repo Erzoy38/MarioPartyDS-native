@@ -34,6 +34,9 @@ constexpr FaceButton kFaceButtons[] = {
 
 Uint8 alpha(float part) { return Uint8(std::clamp(part, 0.0f, 1.0f) * 255.0f + 0.5f); }
 
+// With the buttons hidden, the menu button sits small in the top left corner and fainter.
+constexpr float kHiddenMenuOpacity = 0.45f;
+
 bool inside(const SDL_FRect& r, float x, float y) {
     return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
 }
@@ -127,8 +130,22 @@ void TouchControls::set_output(float w, float h, const SDL_FRect& safe) {
 }
 
 SDL_FRect TouchControls::screen_area() const {
-    if (!portrait_) return safe_;
+    if (!portrait_ || buttons_hidden_) return safe_;  // hidden: the whole screen for the game
     return {safe_.x, safe_.y, safe_.w, safe_.h * kScreensPart};
+}
+
+bool TouchControls::menu_in_corner() const { return buttons_hidden_ && mode_ == Mode::Play; }
+
+// Inside TouchControls, kL, kR, kSelect and kStart name the controls (2 to 5), not the DS keys;
+// the keys are named through their enum here.
+Uint32 TouchControls::key_of(int control) {
+    switch (control) {
+        case kL: return DsKey::kL;
+        case kR: return DsKey::kR;
+        case kSelect: return DsKey::kSelect;
+        case kStart: return DsKey::kStart;
+        default: return 0;
+    }
 }
 
 float TouchControls::unit() const {
@@ -139,6 +156,10 @@ float TouchControls::unit() const {
 
 SDL_FPoint TouchControls::centre(int control) const {
     const Place& p = current().places[size_t(control)];
+    if (control == kMenu && menu_in_corner()) {
+        const float r = kMenuRadius * p.size * unit();
+        return {safe_.x + 1.6f * r, safe_.y + 1.6f * r};
+    }
     return {safe_.x + p.x * safe_.w, safe_.y + p.y * safe_.h};
 }
 
@@ -188,11 +209,7 @@ Uint32 TouchControls::button_keys_at(float x, float y) const {
             if (std::hypot(x - bx, y - by) <= kButtonRadius * s * 1.45f) keys |= b.key;
         }
     }
-    const int c = control_at(x, y);
-    if (c == kL) keys |= kL;
-    if (c == kR) keys |= kR;
-    if (c == kSelect) keys |= kSelect;
-    if (c == kStart) keys |= kStart;
+    keys |= key_of(control_at(x, y));
     return keys;
 }
 
@@ -460,15 +477,17 @@ void TouchControls::draw_controls(SDL_Renderer* renderer, ui::Text& text, float 
             }
         } else if (c == kMenu) {
             const float r = b.w / 2;
-            ui::fill_rounded(renderer, b, r, base);
-            ui::outline_rounded(renderer, b, r, line);
+            const float k = menu_in_corner() ? kHiddenMenuOpacity : 1.0f;
+            const ui::Rgba menu_base{base.r, base.g, base.b, Uint8(float(base.a) * k)};
+            const ui::Rgba menu_line{line.r, line.g, line.b, Uint8(float(line.a) * k)};
+            ui::fill_rounded(renderer, b, r, menu_base);
+            ui::outline_rounded(renderer, b, r, menu_line);
             for (int i = -1; i <= 1; ++i) {
                 ui::fill_rounded(renderer, {m.x - 0.45f * r, m.y + float(i) * 0.32f * r - 0.07f * r, 0.9f * r, 0.14f * r},
-                                 0.07f * r, line);
+                                 0.07f * r, menu_line);
             }
         } else {
-            const Uint32 key = c == kL ? kL : c == kR ? kR : c == kSelect ? kSelect : kStart;
-            ui::fill_rounded(renderer, b, b.h / 2, (held & key) ? pressed : base);
+            ui::fill_rounded(renderer, b, b.h / 2, (held & key_of(c)) ? pressed : base);
             ui::outline_rounded(renderer, b, b.h / 2, line);
             label.font = ui::Font::Semibold;
             label.size = b.h * 0.45f;

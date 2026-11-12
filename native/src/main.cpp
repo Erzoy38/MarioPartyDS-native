@@ -352,8 +352,9 @@ void place_screens_for_controls(int ow, int oh) {
     const SDL_FRect area = g_controls->screen_area();
     const bool portrait = g_controls->portrait();
     g_rects = screen_rects(area.w, area.h, portrait ? int(kLayoutStacked) : g_layout, g_aspect);
-    // In portrait the screens sit at the top of their part, not in its middle.
-    const float lift = portrait ? std::min(g_rects.top.y, g_rects.bottom.y) : 0.0f;
+    // In portrait the screens sit at the top of their part, not in its middle; with the buttons
+    // hidden they have the whole screen and stay in its middle.
+    const float lift = portrait && !g_controls->buttons_hidden() ? std::min(g_rects.top.y, g_rects.bottom.y) : 0.0f;
     for (SDL_FRect* r : {&g_rects.top, &g_rects.bottom}) {
         r->x += area.x;
         r->y += area.y - lift;

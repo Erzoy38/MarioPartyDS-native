@@ -27,8 +27,9 @@ public:
     void set_output(float w, float h, const SDL_FRect& safe);
     bool portrait() const { return portrait_; }
     // Where the DS screens go: in portrait the upper part, the controls below; in landscape all of
-    // the safe area, the controls at the sides over it.
+    // the safe area, the controls at the sides over it. With the buttons hidden, all of it.
     SDL_FRect screen_area() const;
+    bool buttons_hidden() const { return buttons_hidden_; }
     // Where the bottom DS screen is shown, for the stylus.
     void set_touch_screen(const SDL_FRect& rect) { touch_rect_ = rect; }
 
@@ -79,6 +80,9 @@ private:
     SDL_FPoint centre(int control) const;
     SDL_FRect bounds(int control) const;
     bool shown(int control) const;
+    // Control kL, kR, kSelect or kStart to its DS key: the names are the same, the values not.
+    static Uint32 key_of(int control);
+    bool menu_in_corner() const;  // buttons hidden while playing: the menu button small, top left
     int control_at(float x, float y) const;
     Uint32 button_keys_at(float x, float y) const;
     Uint32 dpad_keys_at(float x, float y) const;
