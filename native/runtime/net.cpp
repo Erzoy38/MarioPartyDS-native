@@ -767,7 +767,8 @@ void wait_sockets(int wait_ms) {
         if (wait_ms > 0) plat::sleep_ms(unsigned(wait_ms));
         return;
     }
-    timeval timeout{0, long(wait_ms) * 1000};
+    timeval timeout{};
+    timeout.tv_usec = decltype(timeout.tv_usec)(wait_ms * 1000);  // long on Windows and Linux, int on Apple
     select(plat::select_width(highest), &readable, &writable, &failed, &timeout);
 }
 
