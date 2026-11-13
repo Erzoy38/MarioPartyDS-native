@@ -101,6 +101,12 @@ else()
     list(APPEND MPDS_APP_SOURCES src/text_raster_win.cpp)
 endif()
 set(MPDS_FONTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts")
+# Phones and tablets: the lobby server inside the app as a thread (launcher.cpp, "Server hier
+# starten"). On Windows it stays the program MarioPartyDS-server.exe.
+if(NOT WIN32)
+    list(APPEND MPDS_APP_SOURCES server/server.cpp)
+    set_source_files_properties(server/server.cpp PROPERTIES COMPILE_DEFINITIONS MPDS_SERVER_LIBRARY)
+endif()
 
 if(WIN32)
     # SDL3 is the unpacked SDL3-devel-*-VC.zip in native/third_party/SDL3.
@@ -141,6 +147,7 @@ elseif(ANDROID)
     set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
     add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL3-src" SDL3 EXCLUDE_FROM_ALL)
     add_library(main SHARED ${MPDS_APP_SOURCES})
+    target_include_directories(main PRIVATE server)
     target_link_libraries(main PRIVATE runtime game_code runtime SDL3::SDL3)
     target_compile_options(main PRIVATE ${MPDS_WARNINGS})
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
@@ -173,6 +180,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     # The ROM picker: SDL 3.4 has no file dialog on iOS, so the system's document picker (UIKit).
     add_executable(MarioPartyDS MACOSX_BUNDLE ${MPDS_APP_SOURCES} src/ios_file_picker.mm
                    ${MPDS_IOS_RESOURCES} ${MPDS_IOS_FONTS})
+    target_include_directories(MarioPartyDS PRIVATE server)
     target_link_libraries(MarioPartyDS PRIVATE runtime game_code runtime SDL3::SDL3-static
                           "-framework UIKit" "-framework UniformTypeIdentifiers")
     target_compile_options(MarioPartyDS PRIVATE ${MPDS_WARNINGS})

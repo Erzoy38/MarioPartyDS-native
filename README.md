@@ -46,7 +46,7 @@ Das Projekt wird aktiv entwickelt. Die Einzelheiten mit Messwerten stehen in [`M
 - Windows: Tastatur, Maus als Touchscreen und Controller
 - Handy und Tablet: Touch-Tasten im Hoch- und Querformat, frei verschieb- und skalierbar, ausblendbar; der Finger auf dem unteren DS-Bildschirm ist der Stift; Bluetooth-Controller; Mikrofon zum Pusten
 - Online-Partien für bis zu vier Spieler, mit 6-stelligem Raumcode, auch gemischt zwischen PC und Handy
-- Eigener Server, den der Host direkt aus dem Spiel starten kann (Windows)
+- Eigener Server, den der Host direkt aus dem Spiel starten kann: unter Windows als eigenes Programm, auf Android und iOS in der App
 - Verschlüsselte Verbindung (ECDH P-256, AES-256-GCM) mit Server-Fingerabdruck: unter Windows mit den Bordmitteln (CNG), auf Android und iOS mit Mbed TLS
 - Kurze Verbindungsabbrüche werden überbrückt, und ein Gast kommt nach einem Absturz wieder in die laufende Partie
 
@@ -157,7 +157,9 @@ Dazu kommen **F10** für die Fenstergröße, **F11** für Vollbild und **Esc**, 
 
 ## Online spielen
 
-Ein Spieler ist der **Host**: Er startet im Spiel unter **PLAY ONLINE → Server hier starten** den Server und erstellt einen Raum. Die anderen tragen seine Adresse ein und treten mit dem Raumcode bei, vom PC wie vom Handy. Der Server läuft standardmäßig auf **TCP-Port 47000**. Spieler außerhalb des Heimnetzes brauchen dafür eine Portweiterleitung am Router des Hosts. Den Server startet ein Windows-PC; Handys treten nur bei.
+Ein Spieler ist der **Host**: Er startet im Spiel unter **PLAY ONLINE → Server hier starten** den Server und erstellt einen Raum. Die anderen tragen seine Adresse ein und treten mit dem Raumcode bei, vom PC wie vom Handy. Der Server läuft standardmäßig auf **TCP-Port 47000**. Spieler außerhalb des Heimnetzes brauchen dafür eine Portweiterleitung am Router des Hosts.
+
+Auf einem Handy oder Tablet läuft der Server in der App selbst: Nach **Server hier starten** zeigt sie die WLAN-Adresse, die die anderen unter **SETTINGS → SERVER** eintragen. Das geht im selben WLAN. Über das Mobilfunknetz kann ein Handy keinen Server anbieten, weil dort keine Verbindungen von außen ankommen. Auf Android endet der Server mit „Zurück zum Hauptmenü“, weil die App dort neu startet.
 
 Die vollständige Anleitung mit Firewall, Router, Fingerabdruck und dem Verhalten bei Abbrüchen steht in [`ONLINE.md`](ONLINE.md).
 
@@ -167,7 +169,7 @@ Die vollständige Anleitung mit Firewall, Router, Fingerabdruck und dem Verhalte
 |---|---|
 | `native/runtime/` | Laufzeit: CPU, Speicher, Hardware, 2D (`ppu`), 3D (`gpu3d`), Sound, Netz, Lobby, Verschlüsselung |
 | `native/src/` | Programm: Startbildschirm, Menüs, Eingabe, Touch-Steuerung (`touch_controls`), Plattformschicht (`platform`) |
-| `native/server/` | Lobby- und Relay-Server |
+| `native/server/` | Lobby- und Relay-Server: unter Windows ein eigenes Programm, auf Android und iOS ein Thread in der App |
 | `android/` | Android-Projekt (Gradle): Activity, Manifest, App-Symbol, Build-Skript |
 | `ios/` | iOS: `Info.plist`, App-Symbol, Export-Einstellungen, Build-Skript für den Mac |
 | `tools/` | Python-Werkzeuge: Rekompilierer, Disassembler, Entpacker, Abgleich mit melonDS, Netz- und Minispiel-Tests; `setup_laptop.ps1` |

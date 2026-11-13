@@ -42,6 +42,12 @@ std::string hex(const Bytes& data) {
 
 Identity::~Identity() { crypto::identity_free(key_); }
 
+void Identity::reset() {
+    crypto::identity_free(key_);
+    key_ = nullptr;
+    public_key_.clear();
+}
+
 bool Identity::load_or_create(const std::string& path, std::string& error) {
     if (!crypto::available()) {
         error = crypto::unavailable_text();

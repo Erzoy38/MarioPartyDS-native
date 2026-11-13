@@ -1,16 +1,24 @@
 #include "platform_socket.h"
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <ifaddrs.h>
+#include <net/if.h>
 #endif
 
 #include "launcher.h"
 #include "platform.h"
+#ifndef _WIN32
+#include "server.h"
+#endif
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -45,13 +53,33 @@ bool server_answers(std::uint16_t port) {
     return ok;
 }
 
-// MarioPartyDS-server.exe from this program's folder, in a window of its own that shows its key and
-// log; it keeps running when the game ends or goes back to the menu. Closing that window stops it.
+// Windows: MarioPartyDS-server.exe from this program's folder, in a window of its own that shows its
+// key and log; it keeps running when the game ends or goes back to the menu. Closing that window stops
+// it. Phones and tablets: the same server as a thread in the app (server.h), its key in the app's
+// folder; it runs as long as the app does (on Android a new process after "back to the menu").
 bool start_server_here(std::uint16_t port, std::string& error) {
 #ifndef _WIN32
-    // The server is a program of its own; phones and tablets only join games.
-    (void)port;
-    error = "Auf diesem Gerät läuft kein Server.";
+    static std::atomic<int> result{-1};  // -1 while it runs; 0 stopped, 1 could not start
+    static bool started = false;
+    if (started && result.load() == -1) return true;
+    const std::string key = (platform::user_folder() / "MarioPartyDS-server.key").string();
+    result = -1;
+    started = true;
+    std::thread([port, key] {
+        std::string port_text = std::to_string(port);
+        std::string key_text = key;
+        char name[] = "server", port_flag[] = "--port", key_flag[] = "--key";
+        char* args[] = {name, port_flag, port_text.data(), key_flag, key_text.data(), nullptr};
+        result = server_main(5, args, nullptr);
+    }).detach();
+    // Up to two seconds until it listens, or says why it cannot.
+    for (int i = 0; i < 40; ++i) {
+        if (result.load() != -1) break;
+        if (server_answers(port)) return true;
+        plat::sleep_ms(50);
+    }
+    if (result.load() == -1) return true;  // slow to start, but running
+    error = "Der Server ließ sich nicht starten (Port " + std::to_string(port) + " belegt?).";
     return false;
 #else
     const char* base = SDL_GetBasePath();
@@ -75,8 +103,26 @@ bool start_server_here(std::uint16_t port, std::string& error) {
 #endif
 }
 
-// This PC's IPv4 addresses in the home network, for players there.
+// This PC's IPv4 addresses in the home network, for players there. Phones: from the network
+// interfaces (Wi-Fi), since the host name does not name them there.
 std::string local_addresses() {
+#ifndef _WIN32
+    std::string list;
+    ifaddrs* all = nullptr;
+    if (getifaddrs(&all) == 0) {
+        for (ifaddrs* a = all; a != nullptr; a = a->ifa_next) {
+            if (a->ifa_addr == nullptr || a->ifa_addr->sa_family != AF_INET) continue;
+            if ((a->ifa_flags & IFF_UP) == 0 || (a->ifa_flags & IFF_LOOPBACK) != 0) continue;
+            char text[INET_ADDRSTRLEN] = {};
+            inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(a->ifa_addr)->sin_addr, text, sizeof text);
+            if (list.find(text) != std::string::npos) continue;
+            if (!list.empty()) list += ", ";
+            list += text;
+        }
+        freeifaddrs(all);
+    }
+    return list;
+#else
     plat::net_ready();
     char name[256] = {};
     gethostname(name, sizeof name);
@@ -95,6 +141,7 @@ std::string local_addresses() {
         freeaddrinfo(found);
     }
     return list;
+#endif
 }
 
 void set(SDL_Renderer* r, Colour c, Uint8 a = 255) { SDL_SetRenderDrawColor(r, c.r, c.g, c.b, a); }
@@ -524,12 +571,17 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
                 if (change != 0) settings.character = (settings.character + change + lobby::kCharacters) % lobby::kCharacters;
                 const bool busy = pending != Pending::None || phase == LobbyClient::Phase::Connecting;
                 if (menu.button(bx, 232, bw, "Raum erstellen", !busy)) {
-                    message = "Verbinde mit " + settings.server + " ...";
                     std::string address;
                     std::uint16_t port;
                     target(address, port);
-                    if (phase != LobbyClient::Phase::Menu) client.connect(address, port, settings.name);
-                    pending = Pending::Create;
+                    if (platform::kMobile && !own_server && address == "127.0.0.1" && !server_answers(port)) {
+                        // A phone has no server of its own until it starts one.
+                        message = "Erst \"Server hier starten\", oder unter SETTINGS die Adresse des Servers eintragen.";
+                    } else {
+                        message = "Verbinde mit " + settings.server + " ...";
+                        if (phase != LobbyClient::Phase::Menu) client.connect(address, port, settings.name);
+                        pending = Pending::Create;
+                    }
                 }
                 if (menu.button(bx, 258, bw, "Raum beitreten", !busy)) { message.clear(); go(Screen::Join); }
                 if (!own_server && menu.button(bx, 310, bw, "Server hier starten", !busy)) {
@@ -541,8 +593,14 @@ LaunchChoice run_launcher(SDL_Window* window, SDL_Renderer* renderer, AppSetting
                         own_server = true;
                         client.disconnect();
                         const std::string here = local_addresses();
-                        message = std::string(running ? "Server lief schon." : "Server gestartet (eigenes Fenster).")
-                                  + " Heimnetz: " + (here.empty() ? "?" : here) + ". Mehr in ONLINE.md.";
+                        if (platform::kMobile) {  // the server runs in this app; the others need its Wi-Fi address
+                            message = std::string(running ? "Server läuft schon." : "Server läuft in dieser App.")
+                                      + " Die anderen tragen unter SETTINGS als Server ein: "
+                                      + (here.empty() ? "? (kein WLAN?)" : here) + ". Alle im selben WLAN.";
+                        } else {
+                            message = std::string(running ? "Server lief schon." : "Server gestartet (eigenes Fenster).")
+                                      + " Heimnetz: " + (here.empty() ? "?" : here) + ". Mehr in ONLINE.md.";
+                        }
                     } else {
                         message = error;
                     }

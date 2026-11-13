@@ -20,13 +20,14 @@
 // kStarted, and the others are told (kRelayGone, kRelayBack). The room ends when the host leaves on
 // purpose (kLeave) or nobody has been connected for 10 minutes. The server keeps no game state: after
 // a restart the host's kResume builds the room again, and the games resend what was lost.
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include "lobby_protocol.h"
-#include "secure.h"
+//
+// On Windows it is the program MarioPartyDS-server.exe. On Android and iOS the same code runs inside
+// the app as a thread (server.h, MPDS_SERVER_LIBRARY), through the game's socket layer and Mbed TLS.
+#include "server.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "lobby_protocol.h"
+#include "platform_socket.h"
+#include "secure.h"
 
 #include <algorithm>
 #include <array>
@@ -55,8 +56,11 @@ double now_seconds() {
     return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 
+using plat::kNoSocket;
+using plat::Socket;
+
 struct Client {
-    SOCKET socket = INVALID_SOCKET;
+    Socket socket = kNoSocket;
     std::vector<u8> inbox;
     std::vector<u8> outbox;
     std::string name;
@@ -507,7 +511,7 @@ void drop(int id) {
     std::printf("client %d (%s) gone\n", id, client.name.c_str());
     client.closing = true;
     leave_room(client, id, kLeftRoom);
-    closesocket(client.socket);
+    plat::close_socket(client.socket);
     g_clients.erase(id);
 }
 
@@ -529,10 +533,27 @@ void expire_rooms() {
     }
 }
 
+// Everything closed and forgotten, so that server_main can run again in the same process.
+void close_all(Socket listener) {
+    for (auto& [id, client] : g_clients) plat::close_socket(client.socket);
+    if (listener != kNoSocket) plat::close_socket(listener);
+    g_clients.clear();
+    g_rooms.clear();
+    g_spent_codes.clear();
+    g_next_id = 1;
+    g_identity.reset();
+}
+
 }  // namespace
 
+#ifndef MPDS_SERVER_LIBRARY
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    return server_main(argc, argv, nullptr);
+}
+#endif
+
+int server_main(int argc, char** argv, const std::atomic<bool>* stop) {
     u16 port = kDefaultPort;
     u32 seed = std::random_device{}();
     const char* bind_address = "0.0.0.0";
@@ -554,10 +575,14 @@ int main(int argc, char** argv) {
     }
     g_random.seed(seed);
     if (key_file.empty()) {
+#ifdef _WIN32
         char path[MAX_PATH] = {};
         GetModuleFileNameA(nullptr, path, MAX_PATH);
         key_file = std::string(path);
         key_file = key_file.substr(0, key_file.find_last_of("\\/") + 1) + "MarioPartyDS-server.key";
+#else
+        key_file = "MarioPartyDS-server.key";  // the app always passes --key
+#endif
     }
     std::string key_error;
     if (!g_identity.load_or_create(key_file, key_error)) {
@@ -566,47 +591,53 @@ int main(int argc, char** argv) {
     }
     std::printf("server key %s, fingerprint %s%s\n", key_file.c_str(), secure::fingerprint(g_identity.public_key()).c_str(),
                 g_allow_plain ? ", also unencrypted connections (tests)" : "");
-    WSADATA data;
-    WSAStartup(MAKEWORD(2, 2), &data);
-    SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    plat::net_ready();
+    Socket listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#ifndef _WIN32
+    // The app may start the server again soon after it stopped: the port is free at once.
+    plat::set_option(listener, SOL_SOCKET, SO_REUSEADDR, true);
+#endif
     sockaddr_in where{};
     where.sin_family = AF_INET;
     where.sin_port = htons(port);
     if (inet_pton(AF_INET, bind_address, &where.sin_addr) != 1) {
         std::printf("bad --bind address %s\n", bind_address);
+        close_all(listener);
         return 1;
     }
     if (bind(listener, reinterpret_cast<sockaddr*>(&where), sizeof where) != 0 || listen(listener, 16) != 0) {
         std::printf("cannot listen on %s port %u\n", bind_address, port);
+        close_all(listener);
         return 1;
     }
     std::printf("server on %s port %u, codes last %.0f s\n", bind_address, port, g_code_lifetime);
 
-    for (;;) {
+    while (stop == nullptr || !stop->load()) {
         fd_set readable, writable;
         FD_ZERO(&readable);
         FD_ZERO(&writable);
         FD_SET(listener, &readable);
+        Socket highest = listener;
         for (auto& [id, client] : g_clients) {
             FD_SET(client.socket, &readable);
             if (!client.outbox.empty()) FD_SET(client.socket, &writable);
+            highest = std::max(highest, client.socket);
         }
         timeval wait{0, 200000};
-        select(0, &readable, &writable, nullptr, &wait);
+        select(plat::select_width(highest), &readable, &writable, nullptr, &wait);
 
         if (FD_ISSET(listener, &readable)) {
-            SOCKET s = accept(listener, nullptr, nullptr);
-            if (s != INVALID_SOCKET && g_clients.size() < 60) {
-                u_long nonblocking = 1;
-                ioctlsocket(s, FIONBIO, &nonblocking);
-                BOOL yes = TRUE;
-                setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&yes), sizeof yes);
+            Socket s = accept(listener, nullptr, nullptr);
+            if (s != kNoSocket && g_clients.size() < 60) {
+                plat::set_blocking(s, false);
+                plat::set_option(s, IPPROTO_TCP, TCP_NODELAY, true);
+                plat::no_sigpipe(s);
                 const int id = g_next_id++;
                 g_clients[id].socket = s;
                 g_clients[id].heard = now_seconds();
                 std::printf("client %d connected\n", id);
-            } else if (s != INVALID_SOCKET) {
-                closesocket(s);
+            } else if (s != kNoSocket) {
+                plat::close_socket(s);
             }
         }
 
@@ -614,7 +645,7 @@ int main(int argc, char** argv) {
         for (auto& [id, client] : g_clients) {
             if (FD_ISSET(client.socket, &readable)) {
                 char buffer[16384];
-                const int n = recv(client.socket, buffer, sizeof buffer, 0);
+                const int n = plat::receive_some(client.socket, buffer, int(sizeof buffer));
                 if (n <= 0) {
                     gone.push_back(id);
                     continue;
@@ -650,10 +681,10 @@ int main(int argc, char** argv) {
 
         for (auto& [id, client] : g_clients) {
             while (!client.outbox.empty()) {
-                const int n = send(client.socket, reinterpret_cast<const char*>(client.outbox.data()),
-                                   int(std::min<size_t>(client.outbox.size(), 1 << 16)), 0);
+                const int n = plat::send_some(client.socket, client.outbox.data(),
+                                              int(std::min<size_t>(client.outbox.size(), 1 << 16)));
                 if (n <= 0) {
-                    if (WSAGetLastError() != WSAEWOULDBLOCK) gone.push_back(id);
+                    if (!plat::would_block()) gone.push_back(id);
                     break;
                 }
                 client.outbox.erase(client.outbox.begin(), client.outbox.begin() + n);
@@ -665,4 +696,7 @@ int main(int argc, char** argv) {
         }
         expire_rooms();
     }
+    std::printf("server stopped\n");
+    close_all(listener);
+    return 0;
 }

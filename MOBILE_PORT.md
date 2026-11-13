@@ -329,6 +329,29 @@ und keinen Mac. Geprüft wurde deshalb, was unter Windows geht; alles Weitere br
   Online Handy gegen PC über das Netz, Vulkan/GLES/Metal, Touch, Ton, Mikrofon, Controller, alle
   Bildschirmgrößen, iOS insgesamt.
 
+## Server in der App (Android, iOS)
+
+Auf Handys gab es zuerst keinen Server: „Server hier starten“ meldete einen Fehler, und „Raum erstellen“
+suchte unter der Voreinstellung `127.0.0.1` einen Server auf dem Handy selbst (auf dem iPhone und dem Redmi
+gemeldet). Jetzt läuft derselbe Server in der App:
+
+- **Server:** `server/server.cpp` nutzt die Socket-Schicht des Spiels (`platform_socket.h`) statt Winsock und
+  ist als `server_main(argc, argv, stop)` aufrufbar (`server/server.h`). Unter Windows bleibt es das
+  Programm `MarioPartyDS-server.exe` mit CNG; auf Android und iOS wird es mit `MPDS_SERVER_LIBRARY` in die
+  App übersetzt, mit Mbed TLS. Nach dem Stopp ist alles geschlossen, er kann im selben Prozess wieder
+  starten (`SO_REUSEADDR` außerhalb von Windows, `secure::Identity::reset`).
+- **App:** „Server hier starten“ startet ihn als Thread auf Port 47000, Schlüssel
+  `MarioPartyDS-server.key` im App-Ordner, und zeigt die WLAN-Adresse (`getifaddrs`), die die anderen
+  unter SETTINGS → SERVER eintragen. Ohne eigenen Server und mit `127.0.0.1` sagt „Raum erstellen“, was zu
+  tun ist. Der Server läuft, solange die App läuft; auf iOS übersteht er „Zurück zum Hauptmenü“, auf
+  Android endet er dabei mit dem Prozess.
+- **Grenze:** nur im selben WLAN. Im Mobilfunknetz kommen keine Verbindungen von außen an.
+- **Geprüft unter Windows:** `tools/lobby_rules.py` (28 Regeln, MarioPartyDS-headless als echter Client)
+  besteht mit dem umgebauten `MarioPartyDS-server.exe` (CNG), mit einer Mbed-TLS-Fassung und mit
+  `server_main` als Thread (Mbed TLS), wie in der App. Stoppen und neu starten im selben Prozess: Port
+  wieder frei, gleicher Schlüssel. Windows-Spiel unverändert (`ADF748D445B5A938`).
+- **Nicht geprüft:** auf einem Gerät (WLAN-Adresse, iOS-Abfrage „lokales Netzwerk“, Spiel Handy gegen Handy).
+
 ## Zweiter Rechner (Laptop)
 
 Android-App auf einem weiteren Windows-PC bauen und ein Handy per USB prüfen:

@@ -32,9 +32,14 @@ constexpr std::size_t kMaxRecord = 1u << 16;  // plaintext bytes per record
 // The server's long-lived ECDSA key, kept in a file next to the server.
 class Identity {
 public:
+    Identity() = default;
     ~Identity();
+    Identity(const Identity&) = delete;
+    Identity& operator=(const Identity&) = delete;
     // Reads the key from `path`, or makes a new one and writes it there. False on failure.
     bool load_or_create(const std::string& path, std::string& error);
+    // No key any more (a server that stops and may start again in the same process).
+    void reset();
     const Bytes& public_key() const { return public_key_; }
     Bytes sign(const Bytes& hash) const;
 
