@@ -162,8 +162,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(MPDS_IOS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ios")
     set(MPDS_IOS_BUNDLE_ID "io.github.erzoy38.mariopartyds" CACHE STRING "The app's bundle identifier")
     set(MPDS_IOS_TEAM "" CACHE STRING "Apple developer team ID (10 characters) for signing")
-    set(MPDS_IOS_VERSION "0.4.1" CACHE STRING "Version shown to the player (CFBundleShortVersionString)")
-    set(MPDS_IOS_BUILD "2" CACHE STRING "Build number (CFBundleVersion)")
+    set(MPDS_IOS_VERSION "0.4.2" CACHE STRING "Version shown to the player (CFBundleShortVersionString)")
+    set(MPDS_IOS_BUILD "3" CACHE STRING "Build number (CFBundleVersion)")
     configure_file("${MPDS_IOS_DIR}/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" @ONLY)
 
     # Into the app: the icon (asset catalog), the fonts under fonts/, the start screen's picture if it
