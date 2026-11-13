@@ -3,6 +3,8 @@
 #
 #   MPDS_IOS_TEAM=ABCDE12345 ios/build.sh            an .ipa for your registered iPhones and iPads
 #   ios/build.sh --simulator                          the app for the iOS Simulator (no Apple account needed)
+#   ios/build.sh --unsigned                           an unsigned .ipa for iPhones and iPads; a tool such as
+#                                                     Sideloadly signs it with your Apple ID when installing
 #
 # Needs: Xcode with the iOS SDK, CMake 3.25 or newer, and native/generated/ (translated game code,
 # made from the ROM by tools/recomp.py; copy the folder over from Windows or run the tool here).
@@ -17,9 +19,13 @@ native="$root/native"
 out="$native/build-ios"
 
 simulator=0
+unsigned=0
 if [ "${1:-}" = "--simulator" ]; then
     simulator=1
     out="$native/build-ios-sim"
+elif [ "${1:-}" = "--unsigned" ]; then
+    unsigned=1
+    out="$native/build-ios-unsigned"
 fi
 
 if ! ls "$native"/generated/*.cpp >/dev/null 2>&1; then
@@ -34,7 +40,7 @@ for dir in SDL3-src mbedtls-3.6.4 stb fonts; do
 done
 
 team="${MPDS_IOS_TEAM:-}"
-if [ $simulator = 0 ] && [ -z "$team" ]; then
+if [ $simulator = 0 ] && [ $unsigned = 0 ] && [ -z "$team" ]; then
     echo "Set MPDS_IOS_TEAM to your Apple developer team ID (Xcode > Settings > Accounts)," >&2
     echo "or build for the simulator with --simulator." >&2
     exit 1
@@ -64,6 +70,24 @@ if [ $simulator = 1 ]; then
     echo "Built: $app"
     echo "Into a running simulator:  xcrun simctl install booted \"$app\""
     echo "Start it:                  xcrun simctl launch booted io.github.erzoy38.mariopartyds"
+    exit 0
+fi
+
+if [ $unsigned = 1 ]; then
+    # For devices, without signing; an .ipa is the .app in a folder Payload/, zipped.
+    xcodebuild -project "$project" -scheme MarioPartyDS -configuration Release \
+        -sdk iphoneos -destination "generic/platform=iOS" \
+        CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+    app="$out/Release-iphoneos/MarioPartyDS.app"
+    [ -d "$app" ] || app="$(find "$out" -maxdepth 4 -type d -name MarioPartyDS.app -path '*iphoneos*' | head -n 1)"
+    [ -d "$app" ] || { echo "MarioPartyDS.app not found under $out" >&2; exit 1; }
+    rm -rf "$out/ipa"
+    mkdir -p "$out/ipa/Payload"
+    cp -R "$app" "$out/ipa/Payload/"
+    (cd "$out/ipa" && zip -qry MarioPartyDS-unsigned.ipa Payload)
+    echo
+    echo "Built: $out/ipa/MarioPartyDS-unsigned.ipa"
+    echo "Install it with Sideloadly (Windows or Mac), which signs it with your Apple ID."
     exit 0
 fi
 
