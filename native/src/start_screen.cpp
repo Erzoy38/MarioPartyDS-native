@@ -42,12 +42,14 @@ struct Dialog {
     bool open = false;
     bool answered = false;
     std::string path;
+    std::string error;  // the picker failed (SDL_GetError), shown on the start screen
 };
 Dialog g_dialog;
 
 void SDLCALL on_file_chosen(void*, const char* const* files, int) {
     std::lock_guard<std::mutex> guard(g_dialog.lock);
     g_dialog.path = (files != nullptr && files[0] != nullptr) ? files[0] : "";
+    if (files == nullptr) g_dialog.error = SDL_GetError();
     g_dialog.answered = true;
 }
 
@@ -58,7 +60,9 @@ void open_rom_dialog(SDL_Window* window) {
         g_dialog.open = true;
         g_dialog.answered = false;
         g_dialog.path.clear();
+        g_dialog.error.clear();
     }
+    std::printf("start screen: opening the ROM picker\n");
     platform::show_rom_picker(window, on_file_chosen, nullptr, kFilter, 1);
 }
 
@@ -156,7 +160,9 @@ public:
             Input in;
             if (!read_input(in)) return {};
             if (const auto answer = take_dialog_answer()) {
-                if (auto choice = on_rom_chosen(*answer)) return *choice;
+                const std::string error = take_dialog_error();
+                if (!error.empty()) show_error("The file picker could not be opened: " + error);
+                else if (auto choice = on_rom_chosen(*answer)) return *choice;
             }
             SDL_SetRenderDrawBlendMode(r_, SDL_BLENDMODE_BLEND);
             SDL_SetRenderDrawColor(r_, 0, 0, 0, 255);
@@ -195,6 +201,13 @@ private:
         if (!g_dialog.open || !g_dialog.answered) return std::nullopt;
         g_dialog.open = false;
         return g_dialog.path;
+    }
+
+    std::string take_dialog_error() {
+        std::lock_guard<std::mutex> guard(g_dialog.lock);
+        std::string error;
+        error.swap(g_dialog.error);
+        return error;
     }
 
     void choose_rom(After after) {
