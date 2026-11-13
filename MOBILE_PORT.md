@@ -260,10 +260,16 @@ Stand: vorbereitet. Gebaut und getestet wird auf einem Mac; hier ist nur geprüf
   - `Info.plist` (mit eingesetzten Werten) und `ExportOptions.plist` lassen sich mit `plistlib` lesen,
     die `Contents.json` sind gültiges JSON, und `bash -n ios/build.sh` meldet nichts.
   - Windows unverändert: Spielbild nach 2400 Bildern `ADF748D445B5A938`, `--smoke-test` läuft.
-- **Offen (braucht einen Mac):** CMake-Konfiguration mit Xcode, Übersetzen mit dem iOS-SDK, Start im
-  Simulator, auf einem iPhone oder iPad: Metal, Touch, Ton, Mikrofonabfrage, Dateien-App und Hintergrund.
-  Eine `.ipa` braucht ein Apple-Entwicklerkonto; mit einer kostenlosen Apple-ID geht nur „Run“ aus Xcode
-  auf ein angeschlossenes Gerät (7 Tage gültig).
+- **Gebaut ohne eigenen Mac (2026-11-13):** Workflow „iOS“ im privaten Repository `MarioPartyDS-private`
+  auf einem GitHub-Runner `macos-15` (Xcode 16.4): Quellcode aus diesem Repository, Spielcode und
+  Bibliotheken aus dem privaten Release `data`, `ios/build.sh --unsigned`. Dauer 8 Minuten. Ergebnis
+  `MarioPartyDS-unsigned.ipa` (14,8 MB; Mach-O arm64, 48 MB; Symbol, Schriften, Menübild), als privates
+  Artefakt 14 Tage. Der erste Lauf fand einen Fehler, den die Prüfung unter Windows nicht sehen konnte:
+  `timeval::tv_usec` ist auf Apple ein `int` (`net.cpp`, behoben). Sonst nur harmlose Warnungen.
+- **Installieren:** Sideloadly (Windows oder Mac) signiert die `.ipa` mit der eigenen Apple-ID und spielt sie
+  per USB auf. Mit einer kostenlosen Apple-ID 7 Tage gültig, mit Entwicklerkonto ein Jahr.
+- **Offen (braucht ein iPhone oder iPad):** Start auf dem Gerät: Metal, Touch, Ton, Mikrofonabfrage,
+  Dateien-App und Hintergrund.
 
 ### Phase 7: QA je Plattform
 - **Gleichheit:**
