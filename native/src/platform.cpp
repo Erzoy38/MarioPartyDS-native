@@ -44,16 +44,22 @@ std::string bundled_file(const std::string& name) {
 #endif
 }
 
-std::string rom_in_user_folder() {
-    std::vector<std::string> found;
-    std::error_code error;
-    for (std::filesystem::directory_iterator it(user_folder(), error), end; !error && it != end; it.increment(error)) {
-        std::string extension = it->path().extension().string();
-        for (char& c : extension) c = char(std::tolower(static_cast<unsigned char>(c)));
-        if (extension == ".nds" && it->is_regular_file(error)) found.push_back(it->path().string());
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+bool ios_show_rom_picker(SDL_Window* window, SDL_DialogFileCallback callback, void* userdata);  // ios_file_picker.mm
+#endif
+
+void show_rom_picker(SDL_Window* window, SDL_DialogFileCallback callback, void* userdata,
+                     const SDL_DialogFileFilter* filters, int filter_count) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    (void)filters;
+    (void)filter_count;
+    if (!ios_show_rom_picker(window, callback, userdata)) {
+        SDL_SetError("The file picker could not be shown.");
+        callback(userdata, nullptr, -1);
     }
-    std::sort(found.begin(), found.end());
-    return found.empty() ? std::string() : found.front();
+#else
+    SDL_ShowOpenFileDialog(callback, userdata, window, filters, filter_count, nullptr, false);
+#endif
 }
 
 std::string keep_rom(const std::string& chosen, std::string& error) {

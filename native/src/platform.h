@@ -2,6 +2,8 @@
 // with the program, and the graphics driver. On Windows everything stays as it was.
 #pragma once
 
+#include <SDL3/SDL.h>
+
 #include <filesystem>
 #include <string>
 
@@ -17,8 +19,12 @@ namespace platform {
 // ROM, textures and mods are put there, and save, settings and log are kept there too.
 std::filesystem::path user_folder();
 
-// iOS has no file picker in SDL: the first .nds file in user_folder(), or "" if there is none.
-std::string rom_in_user_folder();
+// The system's file picker for the ROM; the answer comes to `callback` as from SDL_ShowOpenFileDialog
+// (a list with the path, an empty list when cancelled, null on an error). Windows and Android:
+// SDL_ShowOpenFileDialog with `filters`. iOS: the document picker (ios_file_picker.mm), as SDL 3.4
+// has none there; it shows all files.
+void show_rom_picker(SDL_Window* window, SDL_DialogFileCallback callback, void* userdata,
+                     const SDL_DialogFileFilter* filters, int filter_count);
 
 // A file that comes with the program (menu_background.png, fonts), for SDL_IOFromFile/SDL_LoadPNG.
 // Windows and iOS: in the program's folder or bundle. Android: inside the APK, by relative name.
@@ -58,8 +64,5 @@ constexpr bool kMobile =
 #else
     kIOS;
 #endif
-
-// SDL_ShowOpenFileDialog works (Windows, Android). Not on iOS (SDL 3.4 has none there).
-constexpr bool kFileDialog = !kIOS;
 
 }  // namespace platform

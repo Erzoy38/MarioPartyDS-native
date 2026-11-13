@@ -146,7 +146,7 @@ elseif(ANDROID)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     # iPhone and iPad, built on a Mac by ios/build.sh (cmake -G Xcode, then xcodebuild). SDL3 from the
     # same source as on Android, as a static library inside the app; drawing through Metal.
-    enable_language(C OBJC)
+    enable_language(C OBJC OBJCXX)
     set(SDL_SHARED OFF CACHE BOOL "" FORCE)
     set(SDL_STATIC ON CACHE BOOL "" FORCE)
     set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
@@ -170,8 +170,11 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         list(APPEND MPDS_IOS_RESOURCES "${MENU_BACKGROUND}")
     endif()
 
-    add_executable(MarioPartyDS MACOSX_BUNDLE ${MPDS_APP_SOURCES} ${MPDS_IOS_RESOURCES} ${MPDS_IOS_FONTS})
-    target_link_libraries(MarioPartyDS PRIVATE runtime game_code runtime SDL3::SDL3-static)
+    # The ROM picker: SDL 3.4 has no file dialog on iOS, so the system's document picker (UIKit).
+    add_executable(MarioPartyDS MACOSX_BUNDLE ${MPDS_APP_SOURCES} src/ios_file_picker.mm
+                   ${MPDS_IOS_RESOURCES} ${MPDS_IOS_FONTS})
+    target_link_libraries(MarioPartyDS PRIVATE runtime game_code runtime SDL3::SDL3-static
+                          "-framework UIKit" "-framework UniformTypeIdentifiers")
     target_compile_options(MarioPartyDS PRIVATE ${MPDS_WARNINGS})
     set_target_properties(MarioPartyDS PROPERTIES
         OUTPUT_NAME "MarioPartyDS"
@@ -186,7 +189,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         XCODE_ATTRIBUTE_MARKETING_VERSION "${MPDS_IOS_VERSION}"
         XCODE_ATTRIBUTE_CURRENT_PROJECT_VERSION "${MPDS_IOS_BUILD}"
         XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT "dwarf-with-dsym"
-        XCODE_ATTRIBUTE_ENABLE_BITCODE "NO")
+        XCODE_ATTRIBUTE_ENABLE_BITCODE "NO"
+        XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC "YES")
 else()
     message(STATUS "No app for this system (Windows, Android and iOS have one); building the runtime only")
 endif()

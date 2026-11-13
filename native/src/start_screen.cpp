@@ -59,20 +59,8 @@ void open_rom_dialog(SDL_Window* window) {
         g_dialog.answered = false;
         g_dialog.path.clear();
     }
-    SDL_ShowOpenFileDialog(on_file_chosen, nullptr, window, kFilter, 1, nullptr, false);
+    platform::show_rom_picker(window, on_file_chosen, nullptr, kFilter, 1);
 }
-
-// iOS, without a file picker: the ROM found in the app's folder counts as chosen.
-void answer_rom_dialog(const std::string& path) {
-    std::lock_guard<std::mutex> guard(g_dialog.lock);
-    g_dialog.open = true;
-    g_dialog.answered = true;
-    g_dialog.path = path;
-}
-
-constexpr const char* kRomFolderHint =
-    "No ROM found. In the Files app, copy the .nds file into On My iPhone (or iPad) > Mario Party DS, "
-    "then try again.";
 
 // --- Input of one picture ---
 struct Input {
@@ -211,12 +199,6 @@ private:
 
     void choose_rom(After after) {
         after_ = after;
-        if constexpr (!platform::kFileDialog) {
-            const std::string found = platform::rom_in_user_folder();
-            if (found.empty()) show_error(kRomFolderHint);
-            else answer_rom_dialog(found);
-            return;
-        }
         open_rom_dialog(window_);
     }
 
@@ -467,12 +449,8 @@ private:
         std::vector<Row> rows;
         if (tab == 0) {
             Row rom{"ROM IMAGE", rom_ready() ? file_name(rom_path_) : "(none)",
-                    platform::kFileDialog
-                        ? "The game's ROM: Mario Party DS (Europe, Rev 1), a file ending in .nds. Chosen once, it is "
-                          "remembered. Each player needs a copy of their own."
-                        : "The game's ROM: Mario Party DS (Europe, Rev 1), a file ending in .nds. Copy it with the "
-                          "Files app into On My iPhone (or iPad) > Mario Party DS; the game takes it from there. "
-                          "Each player needs a copy of their own."};
+                    "The game's ROM: Mario Party DS (Europe, Rev 1), a file ending in .nds. Chosen once, it is "
+                    "remembered. Each player needs a copy of their own."};
             rom.change = [this](int delta) {
                 if (delta == 0) choose_rom(After::Nothing);
             };

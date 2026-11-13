@@ -241,7 +241,7 @@ void SDLCALL on_rom_chosen(void*, const char* const* files, int) {
 
 std::string ask_for_rom(SDL_Window* window) {
     static const SDL_DialogFileFilter kFilter[] = {{"Nintendo DS ROM", "nds"}};
-    SDL_ShowOpenFileDialog(on_rom_chosen, nullptr, window, kFilter, 1, nullptr, false);
+    platform::show_rom_picker(window, on_rom_chosen, nullptr, kFilter, 1);
     while (!g_dialog_done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -717,7 +717,7 @@ int run_game(int argc, char** argv) {
     if (net_load_rejoin(rejoin_file.string(), rejoin)) rejoin_room = rejoin.code.empty() ? "direkt" : rejoin.code;
     if (!use_menu) {
         // Straight into the game (tests, --local): the ROM from the command line, the settings or a dialog.
-        if (rom_path.empty()) rom_path = platform::kFileDialog ? ask_for_rom(window) : platform::rom_in_user_folder();
+        if (rom_path.empty()) rom_path = ask_for_rom(window);
         if (rom_path.empty()) {
             dlss_stop();  // before SDL takes the Direct3D device away
             SDL_Quit();
