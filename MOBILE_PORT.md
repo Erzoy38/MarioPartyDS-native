@@ -237,8 +237,9 @@ Stand: vorbereitet. Gebaut und getestet wird auf einem Mac; hier ist nur geprüf
 - **`ios/Info.plist.in`:** Version und Bundle-ID setzt CMake ein. Startbildschirm über `UILaunchScreen`
   (ohne Storyboard), Hoch- und Querformat, Vollbild ohne Split View, `NSMicrophoneUsageDescription`,
   `NSLocalNetworkUsageDescription` (Server im eigenen Netz), Copyright „Erzoy38“.
-- **App-Symbol:** `tools/ios_icon.py` zeichnet dasselbe Bild wie das Android-Symbol als 1024×1024-PNG
-  ohne Alphakanal; iOS rundet die Ecken selbst.
+- **App-Symbol:** dasselbe Bild wie bei Android (`android/app/src/main/ic_launcher-playstore.png`, 512 px),
+  auf 1024×1024 vergrößert und ohne Alphakanal; die durchsichtigen Ecken sind in Rahmenfarbe gefüllt. iOS
+  rundet selbst ab, fast genau an der Rundung des Bildes, der goldene Rahmen bleibt sichtbar.
 - **Ordner:** `user_folder()` ist auf iOS der Documents-Ordner der App. Er erscheint in der Dateien-App
   unter „Auf meinem iPhone > Mario Party DS“ (`UIFileSharingEnabled`, `LSSupportsOpeningDocumentsInPlace`).
   Dort liegen auch Spielstand, Einstellungen und Log (`log_path`).
