@@ -137,9 +137,9 @@ Spielstand, Einstellungen und Protokoll liegen unter `%APPDATA%\MarioPartyDS\Mar
 4. Der Knopf **☰** (oder die Zurück-Taste) öffnet das Menü: Bildschirme tauschen, Tasten anpassen (verschieben, Größe, Deckkraft), Tasten ausblenden und zurück zum Hauptmenü. Bei ausgeblendeten Tasten bekommt das Spiel den ganzen Bildschirm, und der Menüknopf sitzt klein oben links.
 5. Ein Tastendruck am Controller blendet die Touch-Tasten aus, eine Berührung blendet sie wieder ein.
 
-### iOS (sobald gebaut)
+### iOS
 
-Die `.nds` kommt über die Dateien-App in „Auf meinem iPhone/iPad > Mario Party DS“; die App nimmt sie von dort. Eine iOS-App kann sich nicht selbst neu starten: „Zurück zum Hauptmenü“ schließt sie, danach öffnet man sie wieder.
+**SELECT ROM IMAGE** öffnet die Dateiauswahl des Systems (iCloud Drive, Downloads, „Auf meinem iPhone“); die App legt eine Kopie der `.nds` in ihrem eigenen Ordner ab. Eine iOS-App kann sich nicht selbst neu starten: „Zurück zum Hauptmenü“ schließt sie, danach öffnet man sie wieder.
 
 ### Steuerung am PC
 

@@ -244,9 +244,10 @@ Stand: vorbereitet. Gebaut und getestet wird auf einem Mac; hier ist nur geprüf
   unter „Auf meinem iPhone > Mario Party DS“ (`UIFileSharingEnabled`, `LSSupportsOpeningDocumentsInPlace`).
   Dort liegen auch Spielstand, Einstellungen und Log (`log_path`).
 - **ROM:** SDL 3.4 hat auf iOS keine Dateiauswahl (`SDL_ShowOpenFileDialog` ist dort nur ein Platzhalter).
-  Die `.nds`-Datei wird deshalb mit der Dateien-App in den App-Ordner kopiert; „ROM IMAGE“ oder „Spielen“
-  nimmt die erste `.nds` dort (`rom_in_user_folder`), sonst steht ein Hinweis da. Sie wird nicht noch
-  einmal kopiert (`keep_rom`).
+  `platform::show_rom_picker` zeigt dort Apples Dokumentenauswahl (`UIDocumentPickerViewController`, alle
+  Dateien, als Kopie; `src/ios_file_picker.mm`), sonst SDLs Dialog, mit demselben Rückruf. `keep_rom`
+  legt die Kopie als `rom.nds` in Documents ab. Erste Fassung (nur Ordner durchsuchen) war auf dem iPhone
+  unbrauchbar: Antippen öffnete nichts.
 - **Zurück zum Hauptmenü:** Eine iOS-App kann sich nicht selbst neu starten. Das Spiel sagt
   „The app closes now. Open it again to get to the main menu.“ und beendet sich.
 - **Ende:** Auf iOS läuft eine App nach dem Ende von `main` ohne Bild weiter. `main` ruft deshalb
@@ -269,8 +270,8 @@ Stand: vorbereitet. Gebaut und getestet wird auf einem Mac; hier ist nur geprüf
   `timeval::tv_usec` ist auf Apple ein `int` (`net.cpp`, behoben). Sonst nur harmlose Warnungen.
 - **Installieren:** Sideloadly (Windows oder Mac) signiert die `.ipa` mit der eigenen Apple-ID und spielt sie
   per USB auf. Mit einer kostenlosen Apple-ID 7 Tage gültig, mit Entwicklerkonto ein Jahr.
-- **Offen (braucht ein iPhone oder iPad):** Start auf dem Gerät: Metal, Touch, Ton, Mikrofonabfrage,
-  Dateien-App und Hintergrund.
+- **Auf dem iPhone (2026-11-13):** Die App startet. Die ROM-Wahl ging nicht (siehe ROM oben, behoben).
+- **Offen:** Spiel auf dem Gerät: Metal, Touch, Ton, Mikrofonabfrage und Hintergrund.
 
 ### Phase 7: QA je Plattform
 - **Gleichheit:**
