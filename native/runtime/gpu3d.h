@@ -9,6 +9,7 @@
 
 #include <vector>
 
+void gpu3d_reset();  // back to the state at program start, for machine_reset
 void gpu3d_write(u32 addr, u32 size, u32 value);  // 0x04000400 to 0x040005FF
 u32 gpu3d_read(u32 addr);                         // 0x04000600 to 0x040006A3
 void gpu3d_write_status(u32 value);               // GXSTAT

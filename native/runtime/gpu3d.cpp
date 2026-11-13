@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <memory>
 #include <thread>
 #include <unordered_map>
@@ -1463,6 +1464,69 @@ void fifo_write(u32 value) {
 }
 
 }  // namespace
+
+void gpu3d_reset() {
+    // Geometry and the command FIFO.
+    g_matrix_mode = 0;
+    g_projection = g_position = g_vector = g_texture = g_clip = identity();
+    g_projection_stack = g_texture_stack = Matrix{};
+    std::fill(std::begin(g_position_stack), std::end(g_position_stack), Matrix{});
+    std::fill(std::begin(g_vector_stack), std::end(g_vector_stack), Matrix{});
+    g_stack_level = g_projection_level = 0;
+    g_stack_error = false;
+    g_poly_attr_next = g_poly_attr = 0;
+    g_tex_param = g_pal_base = 0;
+    g_vertex_color = 0x7FFF;
+    g_diffuse = g_ambient = g_specular = g_emission = 0;
+    g_use_shininess = false;
+    std::memset(g_shininess, 0, sizeof g_shininess);
+    std::memset(g_light_dir, 0, sizeof g_light_dir);
+    std::memset(g_light_color, 0, sizeof g_light_color);
+    g_raw_s = g_raw_t = g_tex_s = g_tex_t = 0;
+    std::memset(g_cur, 0, sizeof g_cur);
+    g_viewport = 0x00BFFF00;
+    g_prim_type = 0;
+    g_in_primitive = false;
+    g_strip.clear();
+    g_strip_count = 0;
+    g_vertices_written = 0;
+    g_building.clear();
+    g_ready.clear();
+    g_swap_pending = false;
+    g_swap_param = 0;
+    g_box_result = false;
+    std::memset(g_pos_result, 0, sizeof g_pos_result);
+    std::memset(g_vec_result, 0, sizeof g_vec_result);
+    g_fifo.clear();
+    g_packed = g_packed_params = 0;
+    g_packed_cmd = 0;
+    std::memset(g_params, 0, sizeof g_params);
+    g_param_count = 0;
+    g_status_irq_mode = 0;
+    g_stats = Gpu3dStats{};
+    std::memset(g_picture, 0, sizeof g_picture);
+    g_native = Target{};
+    g_native.resize(1);
+    // The picture for the screen; the program sets its size and texture packs again (gpu3d_set_display).
+    g_display_scale = 1;
+    g_display_replace = g_display_dump = false;
+    g_hooks = Gpu3dTextureHooks{};
+    g_display = Target{};
+    g_display_free_w = g_display_free_h = 0;
+    g_next_jitter_x = g_next_jitter_y = 0;
+    for (int i = 0; i < 2; ++i) {
+        g_display_picture[i].clear();
+        g_display_depth[i].clear();
+        g_display_motion[i].clear();
+        g_display_fresh[i].clear();
+        g_display_info[i] = Gpu3dDisplayInfo{};
+    }
+    g_display_index = 0;
+    g_display_drawn = false;
+    g_replacements.clear();
+    g_dumped.clear();
+    g_last_looks.clear();
+}
 
 void gpu3d_write(u32 addr, u32 size, u32 value) {
     if (size != 4) {

@@ -136,6 +136,12 @@ const u8* vram_obj_ext_palette(int engine) { return g_obj_ext[engine]; }
 const u8* vram_texture_slot(u32 slot) { return slot < 4 ? g_tex_slot[slot] : nullptr; }
 const u8* vram_texture_palette_slot(u32 slot) { return slot < 6 ? g_tex_pal[slot] : nullptr; }
 
+void memory_reset() {
+    g_machine = Machine{};
+    memory_init();
+    vram_remap();  // all banks off, as at program start
+}
+
 // For finding which code reads a range (headless --read-watch); empty range: off.
 u32 g_read_watch_first = 1, g_read_watch_last = 0;
 void (*g_read_watch_hook)(u32 addr, u32 size) = nullptr;

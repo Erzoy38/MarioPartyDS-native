@@ -248,8 +248,19 @@ Stand: vorbereitet. Gebaut und getestet wird auf einem Mac; hier ist nur geprüf
   Dateien, als Kopie; `src/ios_file_picker.mm`), sonst SDLs Dialog, mit demselben Rückruf. `keep_rom`
   legt die Kopie als `rom.nds` in Documents ab. Erste Fassung (nur Ordner durchsuchen) war auf dem iPhone
   unbrauchbar: Antippen öffnete nichts.
-- **Zurück zum Hauptmenü:** Eine iOS-App kann sich nicht selbst neu starten. Das Spiel sagt
-  „The app closes now. Open it again to get to the main menu.“ und beendet sich.
+- **Zurück zum Hauptmenü:** Eine iOS-App kann sich nicht selbst neu starten. Statt eines neuen Prozesses
+  setzt `machine_reset` (machine.h) die ganze Laufzeit zurück: Speicher, Hardware, 2D, 3D, Ton, Overlays,
+  Netz (Verbindungen geschlossen), CPU. `run_game` gibt Fenster, Ton und Controller frei und meldet
+  `kMenuAgain`; `main` setzt den App-Zustand zurück und ruft `run_game` neu auf, wie beim ersten Start.
+  Endet ein Online-Spiel tief im Netzcode, kommt der Rücksprung als Ausnahme `BackToMenu` heraus.
+  Windows und Android starten weiter einen neuen Prozess; `--menu-in-process` schaltet den iOS-Weg unter
+  Windows zum Testen ein.
+  - **Geprüft:** `MarioPartyDS-headless --reset-at TICK` setzt mitten im Lauf zurück und startet neu. Alle
+    Abzüge danach (RAM, ITCM, DTCM, Palette, OAM, Bild) sind byte-gleich mit einem Lauf ohne Reset:
+    durch die Menüs (Reset bei Tick 3000), nach 9000 Ticks Herumspielen, und in den Minispielen der
+    Szenen 20 und 45 (3D, Ton, Overlays; Reset bei Tick 3000). Im Fenster mit `--menu-in-process`:
+    Spiel, Zurück zum Hauptmenü, Startbildschirm, Spiel wieder.
+  - Erste Fassung (App schließt sich) war auf dem iPhone 14 Pro Max unpraktisch.
 - **Ende:** Auf iOS läuft eine App nach dem Ende von `main` ohne Bild weiter. `main` ruft deshalb
   `platform::app_ended`, das dort den Prozess beendet. Unter Windows und Android ändert sich nichts.
 - **Hintergrund:** Auf Handys wartet die Spielschleife zwischen `WILL_ENTER_BACKGROUND` und

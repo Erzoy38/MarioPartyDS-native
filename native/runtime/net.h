@@ -66,6 +66,8 @@ struct NetSettings {
 bool net_load_rejoin(const std::string& path, NetSettings& settings);
 
 void net_start(const NetSettings& settings);
+// Back to the state at program start, connections closed, for machine_reset.
+void net_reset();
 
 // Called before each block. Runs a replaced function instead of the game's own and returns true.
 bool net_hook(Cpu& c);

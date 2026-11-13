@@ -30,6 +30,9 @@ struct HwState {
 };
 extern HwState g_hw;
 
+// Back to the state at program start, for a new game in the same process (machine_reset).
+void hw_reset();
+
 // Called between blocks. Returns true if an interrupt was taken.
 void hw_step(Cpu& c);
 bool hw_read(u32 addr, u32 size, u32& value);   // true if handled

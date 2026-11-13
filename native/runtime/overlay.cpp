@@ -37,6 +37,8 @@ void mark_unloaded(u32 id) {
 
 }  // namespace
 
+void overlay_reset() { g_loaded.clear(); }
+
 bool overlay_watch_calls(const Cpu& c) {
     if (c.pc == kLoadOverlay && c.r[0] == kCpuArm9) {
         mark_loaded(c.r[1]);

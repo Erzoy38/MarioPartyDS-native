@@ -432,8 +432,10 @@ void flush_everything(u64 limit_ms) {
     }
 }
 
+bool g_ending = false;  // finish_game has begun (net_reset clears it)
+
 [[noreturn]] void finish_game(const std::string& text) {
-    static bool ending = false;
+    bool& ending = g_ending;
     if (!ending) {
         ending = true;
         std::printf("net: game over: %s (step %llu)\n", text.c_str(), static_cast<unsigned long long>(g_stats.steps));
@@ -1463,6 +1465,54 @@ void deliver_blocks() {
 }
 
 }  // namespace
+
+void net_reset() {
+    // Whatever is still open is closed: a new game starts without connections.
+    conn_close(g_main);
+    for (auto& [aid, guest] : g_guests) conn_close(guest.conn);
+    for (Conn& conn : g_pending) conn_close(conn);
+    if (g_connecting != kNoSocket) plat::close_socket(g_connecting);
+    if (g_listen != kNoSocket) plat::close_socket(g_listen);
+    g_settings = NetSettings{};
+    g_wait_callback = nullptr;
+    g_end_callback = nullptr;
+    g_own_aid = 0;
+    g_stats = NetStats{};
+    g_started = false;
+    g_relay_mode = false;
+    g_guests.clear();
+    g_main = Conn{};
+    g_main_attached = false;
+    g_ever_connected = false;
+    g_connecting = kNoSocket;
+    g_connect_began = g_last_attempt = g_server_pinged = 0;
+    g_main_down_since = 0;
+    g_left_on_purpose = false;
+    g_link = Link{};
+    g_token = 0;
+    g_host_gone = false;
+    g_welcomed = false;
+    g_language = 0;
+    g_joined = -1;
+    g_steps.clear();
+    g_tagged_blocks.clear();
+    g_records_sent = g_steps_taken = 0;
+    g_rejoin_waiting = false;
+    g_skip_upto = 0;
+    g_listen = kNoSocket;
+    g_pending.clear();
+    g_own_records.clear();
+    g_blocks.clear();
+    g_send_done.clear();
+    g_wait_first.clear();
+    g_wait_second.clear();
+    g_ending = false;
+    g_mb_running = false;
+    g_mb_ending = false;
+    g_fs_start_return = 0;
+    g_pick_countdown = -1;
+    g_pick_frames = 0;
+}
 
 void net_tick() {
     if (!g_started) return;

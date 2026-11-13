@@ -997,6 +997,19 @@ void driver_tick() {
 
 }  // namespace
 
+void sound_reset() {
+    for (Player& p : g_players) p = Player{};
+    for (Track& t : g_tracks) t = Track{};
+    for (Channel& c : g_channels) c = Channel{};
+    g_channel_lock = 0;
+    g_shared = 0;
+    g_line_counter = 0;
+    g_random = 0x12345;
+    g_stats = SoundStats{};
+    g_samples.clear();
+    g_sample_rest = 0;
+}
+
 void sound_init(const std::vector<u8>& rom) {
     u32 arm7_offset;
     std::memcpy(&arm7_offset, &rom[0x30], 4);

@@ -24,6 +24,7 @@ constexpr u32 kOverlayAreaStart = 0x021638A0;
 constexpr u32 kOverlayAreaEnd = 0x021A5000;
 
 // Call before each block: notices the game's load and unload calls. True if overlays changed.
+void overlay_reset();  // no overlay loaded, as at program start (machine_reset)
 bool overlay_watch_calls(const Cpu& c);
 
 inline bool in_overlay_area(u32 pc) { return pc >= kOverlayAreaStart && pc < kOverlayAreaEnd; }

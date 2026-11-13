@@ -1,9 +1,11 @@
 #include "machine.h"
 
+#include "gpu3d.h"
 #include "hw.h"
 #include "memory.h"
 #include "net.h"
 #include "overlay.h"
+#include "ppu.h"
 #include "sound.h"
 
 #include <algorithm>
@@ -137,6 +139,20 @@ void machine_force_mode(int mode) { g_forced_mode = mode; }
 // (found by setting bits and watching the board select). The game saves them like its own.
 MachineCheats g_cheats;
 void machine_set_cheats(const MachineCheats& cheats) { g_cheats = cheats; }
+
+void machine_reset() {
+    memory_reset();
+    hw_reset();
+    ppu_reset();
+    gpu3d_reset();
+    sound_reset();
+    overlay_reset();
+    net_reset();
+    g_cpu = Cpu{};
+    std::memset(g_block_cache, 0, sizeof g_block_cache);
+    g_forced_mode = -1;
+    g_cheats = MachineCheats{};
+}
 
 void apply_cheats() {
     constexpr u32 kPlayed = 0x021547B8;

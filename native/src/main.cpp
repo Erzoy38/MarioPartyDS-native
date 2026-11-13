@@ -301,6 +301,39 @@ bool g_has_3d = false;
 std::string g_grab;  // --grab FILE.bmp
 std::vector<std::pair<long long, u32>> g_presses;  // --press FRAME:KEY
 
+// iOS: "back to the main menu" within this process. An app there cannot start itself again, so the
+// game is reset (machine_reset) and run_game starts once more with the start screen.
+bool g_menu_again = false;
+bool g_menu_in_process = platform::kIOS;  // --menu-in-process: the same on Windows, to test it there
+constexpr int kMenuAgain = -100;  // run_game's answer: start it again
+struct BackToMenu {};  // thrown out of the network's callbacks, caught around the game loop
+
+// This file's state back to program start, before run_game runs again (iOS).
+void reset_app_state() {
+    g_pad = Pad{};
+    g_select_swaps = false;
+    g_dialog_path.clear();
+    g_dialog_done = false;
+    g_window = nullptr;
+    g_renderer = nullptr;
+    g_texture = nullptr;
+    g_rom_path.clear();
+    g_settings_arg.clear();
+    g_wait_asks_to_leave = false;
+    g_layout = kLayoutStacked;
+    g_aspect = kAspect4x3;
+    g_rects = ScreenRects{};
+    g_swapped = false;
+    g_touch_rect = SDL_FRect{};
+    g_controls = nullptr;
+    g_texture_3d = nullptr;
+    g_placement = Ppu3dPlacement{};
+    g_has_3d = false;
+    g_grab.clear();
+    g_presses.clear();
+    g_menu_again = false;
+}
+
 u32 scripted_keys(long long frame) {
     u32 keys = 0;
     for (const auto& [at, mask] : g_presses) {
@@ -463,15 +496,13 @@ bool mouse_on_touch_screen(float window_x, float window_y, float& x, float& y) {
 
 // Starts this program again with the menu, after the game has ended.
 void restart_with_menu(const std::string& rom_path) {
+    if (g_menu_in_process) {  // iOS, no new process: the game is reset and the menu comes back (main)
+        std::printf("back to the menu: in this app\n");
+        g_menu_again = true;
+        return;
+    }
     if (platform::kMobile) {  // one app, no second program: the app starts itself again
-        if (!platform::restart_app()) {
-            std::printf("back to the menu: the app could not start again, it ends\n");
-            // iOS: an app cannot open itself again, so the player is told before it closes.
-            if (platform::kIOS) {
-                SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Mario Party DS",
-                                         "The app closes now. Open it again to get to the main menu.", g_window);
-            }
-        }
+        if (!platform::restart_app()) std::printf("back to the menu: the app could not start again, it ends\n");
         return;
     }
     const char* base = SDL_GetBasePath();
@@ -512,6 +543,7 @@ void on_network_wait() {
             std::printf("left while waiting for the other players\n");
             net_leave();
             restart_with_menu(g_rom_path);
+            if (g_menu_again) throw BackToMenu{};  // iOS: out of the game loop, the menu comes back
             dlss_stop();
             SDL_Quit();
             std::exit(0);
@@ -525,6 +557,7 @@ void on_network_wait() {
                 std::printf("left while waiting for the other players\n");
                 net_leave();
                 restart_with_menu(g_rom_path);
+                if (g_menu_again) throw BackToMenu{};
                 dlss_stop();  // before SDL takes the Direct3D device away
                 SDL_Quit();
                 std::exit(0);
@@ -567,6 +600,7 @@ void on_network_end(const std::string& text) {
         SDL_Delay(30);
     }
     restart_with_menu(g_rom_path);
+    if (g_menu_again) throw BackToMenu{};
     dlss_stop();  // before SDL takes the Direct3D device away
     SDL_Quit();
     std::exit(0);
@@ -577,7 +611,21 @@ void on_network_end(const std::string& text) {
 int run_game(int argc, char** argv);
 
 int main(int argc, char** argv) {
-    const int code = run_game(argc, argv);
+    int code = run_game(argc, argv);
+    // iOS, "back to the main menu": everything as at program start, then the start screen again.
+    while (code == kMenuAgain) {
+        machine_reset();
+        reset_app_state();
+        // As the app starts: the start screen, ROM and settings from settings.ini. A test on Windows
+        // (--menu-in-process with --settings and --save) keeps its own settings and save files.
+        std::vector<char*> again{argv[0]};
+        for (int i = 1; i + 1 < argc; ++i) {
+            const std::string arg = argv[i];
+            if (arg == "--settings" || arg == "--save") again.insert(again.end(), {argv[i], argv[i + 1]});
+        }
+        again.push_back(nullptr);
+        code = run_game(int(again.size()) - 1, again.data());
+    }
     platform::app_ended(code);  // iOS: the process ends here; elsewhere nothing changes
     return code;
 }
@@ -618,6 +666,7 @@ int run_game(int argc, char** argv) {
         else if (arg == "--audio-stats") g_audio_stats = true;
         else if (arg == "--compare-compose" && i + 1 < argc) compare_every = std::atoi(argv[++i]);
         else if (arg == "--force-mode" && i + 1 < argc) machine_force_mode(int(std::strtol(argv[++i], nullptr, 0)));
+        else if (arg == "--menu-in-process") g_menu_in_process = true;
         else if (arg.rfind("--", 0) != 0) rom_path = arg;
     }
 
@@ -692,8 +741,11 @@ int run_game(int argc, char** argv) {
     // With --settings the log goes next to that file, so test windows do not share one.
     std::filesystem::path log_file = data_folder / "MarioPartyDS.log";
     if (!settings_arg.empty()) log_file = std::filesystem::path(settings_file).replace_extension(".log");
-    FILE* log = std::freopen(log_file.string().c_str(), "w", stdout);
+    // After "back to the main menu" in this process the log goes on instead of starting again.
+    static bool log_started = false;
+    FILE* log = std::freopen(log_file.string().c_str(), log_started ? "a" : "w", stdout);
     (void)log;
+    log_started = true;
     machine_set_abort_hook(on_abort);
     // NVIDIA DLSS, where the card has it; the settings say why not otherwise.
     if (!dlss_start(renderer, data_folder)) std::printf("dlss: not available: %s\n", dlss_reason().c_str());
@@ -952,7 +1004,9 @@ int run_game(int argc, char** argv) {
     std::vector<u8> layer_3d;  // the 3D picture for the graphics card
     u64 dlss_serial = ~0ull;   // the list DLSS was last given
     bool in_background = false;  // phones: between WILL_ENTER_BACKGROUND and DID_ENTER_FOREGROUND
+    bool network_ended = false;  // iOS: the network's end came out of the game loop (BackToMenu)
 
+    try {
     while (running && frame_limit != frames) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -1193,6 +1247,11 @@ int run_game(int argc, char** argv) {
             next_frame = now;  // too far behind to catch up
         }
     }
+    } catch (const BackToMenu&) {  // only on iOS: the network ended the game or the player left it
+        back_to_menu = true;
+        network_ended = true;
+        if (upscale_job.valid()) upscale_job.wait();
+    }
 
     if (frames_since_change >= 0 && !write_save(save_path, machine_save())) {
         show_error("The save could not be written.");
@@ -1205,12 +1264,22 @@ int run_game(int argc, char** argv) {
     // Online, the others are told; the machine cannot be booted twice in one process, so the menu
     // comes back as a new one.
     sound_out.report(true);
-    if (online) net_leave();
+    if (online && !network_ended) net_leave();
     if (back_to_menu) restart_with_menu(rom_path);
     microphone.close();  // before SDL ends, or closing it later reaches into nothing
     g_controls = nullptr;
     controls_text.reset();  // its textures belong to the renderer
     controls.reset();
+    if (g_menu_again) {
+        // iOS: SDL stays; this game's window, sound and gamepad go, and main starts run_game again.
+        if (upscale_job.valid()) upscale_job.wait();
+        if (audio != nullptr) SDL_DestroyAudioStream(audio);
+        if (g_pad.handle != nullptr) SDL_CloseGamepad(g_pad.handle);
+        SDL_DestroyRenderer(renderer);  // its textures with it
+        SDL_DestroyWindow(window);
+        std::fflush(stdout);
+        return kMenuAgain;
+    }
     dlss_stop();  // before SDL takes the Direct3D device away
     SDL_Quit();
     return 0;

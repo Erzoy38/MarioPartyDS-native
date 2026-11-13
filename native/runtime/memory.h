@@ -23,6 +23,8 @@ struct Machine {
 extern Machine g_machine;
 
 void memory_init();
+// Back to the state at program start (all memory empty, no VRAM mapped), for machine_reset.
+void memory_reset();
 
 // Rebuilds the VRAM mapping from the bank control registers.
 void vram_remap();

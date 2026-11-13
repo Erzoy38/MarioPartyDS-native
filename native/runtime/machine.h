@@ -21,6 +21,13 @@ std::string machine_check_rom(const std::vector<u8>& rom);
 // The ROM has to stay alive as long as the machine runs.
 void machine_boot(const std::vector<u8>& rom, const MachineSettings& settings);
 
+// Everything back to the state at program start (memory, hardware, pictures, sound, overlays,
+// network with its connections closed, CPU, test settings, cheats), so that machine_boot can start
+// a new game in the same process. A game after a reset runs exactly like one in a new process
+// (checked by MarioPartyDS-headless --reset-at). iOS uses it for "back to the main menu", since an
+// app there cannot start itself again.
+void machine_reset();
+
 Cpu& machine_cpu();
 
 // Runs one block, including time passing and interrupts. Stops the program if code is missing.

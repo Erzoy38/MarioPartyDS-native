@@ -10,6 +10,7 @@
 constexpr int kScreenWidth = 256;
 constexpr int kScreenHeight = 192;
 
+void ppu_reset();  // back to the state at program start, for machine_reset
 void ppu_render_line(u32 line);
 void ppu_finish_frame();  // the finished picture becomes the one to show
 

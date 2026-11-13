@@ -395,6 +395,7 @@ int run_lobby(const LobbyOptions& options, const std::string& name, NetSettings&
 // save select) it goes to MODE instead. A shortcut for tests; the state a real menu would have set
 // up is missing, so a scene reached this way may behave differently.
 int g_force_mode = -1;
+int g_force_mode_arg = -1;  // as given, armed again by --reset-at
 constexpr u32 kSetNextMode = 0x0201A3AC;
 
 void apply_forced_mode(Cpu& c) {
@@ -523,6 +524,14 @@ int main(int argc, char** argv) {
     LobbyOptions lobby_options;
     int input_delay = -1;  // pictures; -1: the server's choice, or none on a direct connection
     std::string rejoin_from;  // --rejoin FILE: back into a running game, from what --rejoin-file wrote
+    // --reset-at TICK: at that game tick everything is reset (machine_reset) and the game boots
+    // again in this process, with the tick count from 0 and the same inputs. Dumps after it must
+    // equal those of a run without the reset.
+    u64 reset_tick = 0;
+    bool reset_done = false;
+    for (int i = 2; i + 1 < argc; i += 2) {
+        if (!std::strcmp(argv[i], "--reset-at")) reset_tick = std::strtoull(argv[i + 1], nullptr, 0);
+    }
     for (int i = 2; i + 1 < argc; i += 2) {
         if (!std::strcmp(argv[i], "--lobby")) lobby_options.server = argv[i + 1];
         else if (!std::strcmp(argv[i], "--create")) lobby_options.create = argv[i + 1];
@@ -551,7 +560,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--give-up")) net.give_up_seconds = std::atoi(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--rejoin-file")) net.rejoin_file = argv[i + 1];
         else if (!std::strcmp(argv[i], "--rejoin")) rejoin_from = argv[i + 1];
-        else if (!std::strcmp(argv[i], "--force-mode")) g_force_mode = int(std::strtol(argv[i + 1], nullptr, 0));
+        else if (!std::strcmp(argv[i], "--force-mode")) g_force_mode = g_force_mode_arg = int(std::strtol(argv[i + 1], nullptr, 0));
         else if (!std::strcmp(argv[i], "--end-after-minigame")) g_end_after_minigame = std::atoi(argv[i + 1]) != 0;
         else if (!std::strcmp(argv[i], "--leave-at-tick")) g_leave_tick = std::strtoull(argv[i + 1], nullptr, 0);
         else if (!std::strcmp(argv[i], "--leave-file")) g_leave_file = argv[i + 1];
@@ -672,6 +681,19 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(net_stats().steps), static_cast<unsigned long long>(net_stats().blocks),
                         net_stats().players, net_stats().checksum);
             return 0;
+        }
+        if (reset_tick != 0 && !reset_done && c.pc == kGameTick && g_game_ticks == reset_tick) {
+            reset_done = true;
+            std::printf("reset at game tick %llu\n", static_cast<unsigned long long>(g_game_ticks));
+            machine_reset();
+            machine_set_cheats(g_cheats_option);
+            machine_boot(rom, settings);
+            net_start(net);
+            g_game_ticks = 0;
+            g_force_mode = g_force_mode_arg;
+            last_dumped_tick = ~0ull;
+            last_frame_tick = ~0ull;
+            continue;
         }
         ++blocks;
         apply_forced_mode(c);

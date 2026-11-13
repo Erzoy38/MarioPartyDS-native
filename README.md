@@ -139,7 +139,7 @@ Spielstand, Einstellungen und Protokoll liegen unter `%APPDATA%\MarioPartyDS\Mar
 
 ### iOS
 
-**SELECT ROM IMAGE** öffnet die Dateiauswahl des Systems (iCloud Drive, Downloads, „Auf meinem iPhone“); die App legt eine Kopie der `.nds` in ihrem eigenen Ordner ab. Eine iOS-App kann sich nicht selbst neu starten: „Zurück zum Hauptmenü“ schließt sie, danach öffnet man sie wieder.
+**SELECT ROM IMAGE** öffnet die Dateiauswahl des Systems (iCloud Drive, Downloads, „Auf meinem iPhone“); die App legt eine Kopie der `.nds` in ihrem eigenen Ordner ab. „Zurück zum Hauptmenü“ setzt das Spiel innerhalb der App zurück und zeigt wieder den Startbildschirm.
 
 ### Steuerung am PC
 

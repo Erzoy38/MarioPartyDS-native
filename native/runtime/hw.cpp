@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <map>
 #include <vector>
 
@@ -142,9 +143,12 @@ void receive(u32 data) {
 // Power and sound-chip settings. A request spans several words; bits 24-25 count down to 1 on
 // the last. The reply is the command with a result byte (see the callback at 0x0206B34C).
 // The settings change nothing here, so each one is accepted and logged.
+u32 g_power_first_word = 0;   // the request being received (hw_reset clears it)
+bool g_power_in_request = false;
+
 void arm7_power(u32 data) {
-    static u32 first_word = 0;
-    static bool in_request = false;
+    u32& first_word = g_power_first_word;
+    bool& in_request = g_power_in_request;
     const u32 words_left = (data >> 24) & 3;
     if (!in_request) {
         first_word = data;
@@ -526,6 +530,33 @@ void next_line() {
 }
 
 }  // namespace
+
+void hw_reset() {
+    g_hw = HwState{};
+    g_ipc_out = 0;
+    g_ipc_recv = 0;
+    g_ipc_sync_irq_on = g_fifo_send_irq_on = g_fifo_recv_irq_on = g_fifo_on = false;
+    g_fifo_to_arm9.clear();
+    g_fifo_last = 0;
+    g_tag_counts.clear();
+    g_keys_pressed = 0;
+    backup::g_block = 0;
+    backup::g_wait_block = false;
+    backup::g_memory.clear();
+    backup::g_changed = false;
+    g_power_first_word = 0;
+    g_power_in_request = false;
+    g_touch_word = 0x06000000;
+    mic::g_running = mic::g_loop = false;
+    mic::g_level = 0;
+    mic::g_type = mic::g_buffer = mic::g_size = mic::g_position = mic::g_rest = mic::g_counter = 0;
+    mic::g_timer = 1;
+    std::fill(std::begin(mic::g_words), std::end(mic::g_words), 0u);
+    mic::g_command = 0;
+    for (u32* timer : {g_timer_counter, g_timer_reload, g_timer_control, g_timer_rest}) std::fill_n(timer, 4, 0u);
+    g_card_addr = g_card_left = 0;
+    g_card_is_id = false;
+}
 
 void hw_raise(u32 flags) { set_io32(0x214, io32(0x214) | flags); }
 

@@ -640,6 +640,24 @@ void capture_line(u32 line, u32 control) {
 
 }  // namespace
 
+void ppu_reset() {
+    g_engines[0] = Engine{0, 0x0000, 0x000000, 0x400000, 0x000, 0x000};
+    g_engines[1] = Engine{1, 0x1000, 0x200000, 0x600000, 0x400, 0x400};
+    std::memset(g_back, 0, sizeof g_back);
+    std::memset(g_front, 0, sizeof g_front);
+    g_gaps = PpuGaps{};
+    g_line = Line{};
+    g_3d_this_line = false;
+    g_3d_scroll_back = g_3d_scroll_front = 0;
+    g_3d_screen_back = g_3d_screen_front = -1;
+    g_capture_running = false;
+    std::memset(g_map_back, 0, sizeof g_map_back);
+    std::memset(g_map_front, 0, sizeof g_map_front);
+    std::memset(g_master_back, 0, sizeof g_master_back);
+    std::memset(g_master_front, 0, sizeof g_master_front);
+    g_display_back = g_display_front = -1;
+}
+
 void ppu_render_line(u32 line) {
     u16 powcnt;
     std::memcpy(&powcnt, &g_machine.io[0x304], 2);

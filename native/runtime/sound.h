@@ -11,6 +11,7 @@
 
 constexpr u32 kSoundRate = 32768;
 
+void sound_reset();  // back to the state at program start, for machine_reset
 void sound_init(const std::vector<u8>& rom);
 
 // One word arrived on the sound channel: the address of a command chain, or 0.
