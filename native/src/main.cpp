@@ -642,9 +642,13 @@ int run_game(int argc, char** argv) {
     const int first_w = use_menu ? kStartWindowWidth : kWidth * scale;
     const int first_h = use_menu ? kStartWindowHeight : kHeight * scale;
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, platform::preferred_render_driver());
-    if (!SDL_CreateWindowAndRenderer("Mario Party DS", first_w, first_h, SDL_WINDOW_RESIZABLE, &window, &renderer)) {
+    // iOS draws in points (a third of the pixels on an iPhone 14 Pro Max) unless asked for the
+    // display's own density; without it the picture is blurred. Windows and Android stay as they were.
+    const SDL_WindowFlags window_flags =
+        SDL_WINDOW_RESIZABLE | (platform::kIOS ? SDL_WINDOW_HIGH_PIXEL_DENSITY : SDL_WindowFlags(0));
+    if (!SDL_CreateWindowAndRenderer("Mario Party DS", first_w, first_h, window_flags, &window, &renderer)) {
         SDL_ResetHint(SDL_HINT_RENDER_DRIVER);  // that driver failed: whatever SDL has
-        if (!SDL_CreateWindowAndRenderer("Mario Party DS", first_w, first_h, SDL_WINDOW_RESIZABLE, &window, &renderer)) {
+        if (!SDL_CreateWindowAndRenderer("Mario Party DS", first_w, first_h, window_flags, &window, &renderer)) {
             std::printf("window failed: %s\n", SDL_GetError());
             return 1;
         }
