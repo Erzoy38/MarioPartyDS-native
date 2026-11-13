@@ -45,9 +45,11 @@ bool ios_show_rom_picker(SDL_Window* window, SDL_DialogFileCallback callback, vo
     UIViewController* top = ui_window.rootViewController;
     while (top.presentedViewController != nil) top = top.presentedViewController;
     if (top == nil) return false;
-    // Any file: .nds has no registered type, and the game checks the file itself.
+    // Any file: .nds has no registered type, and the game checks the file itself. public.item, not
+    // public.data: in the Files app such files often have only the most general type, and with
+    // public.data they were greyed out on an iPhone.
     UIDocumentPickerViewController* picker =
-        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
+        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeItem] asCopy:YES];
     picker.allowsMultipleSelection = NO;
     g_picker = [MPDSRomPicker new];
     g_picker.callback = callback;
